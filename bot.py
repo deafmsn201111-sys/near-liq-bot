@@ -293,15 +293,22 @@ class BinanceMonitor(BaseMonitor):
 
 # ─── Bybit ──────────────────────────────────────────────────
 class BybitMonitor(BaseMonitor):
+    """
+    Bybit V5: топик allLiquidation использует короткие поля: s, S, v, p
+    Пример: {"topic":"allLiquidation.NEARUSDT","data":[{"T":...,"s":"NEARUSDT","S":"Sell","v":"100","p":"2.15"}]}
+    """
     name = "Bybit"
+
     @property
     def url(self):
         return "wss://stream.bybit.com/v5/public/linear"
+
     def on_open(self, ws):
         topics = [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]
         logger.info(f"[{self.name}] ✅ Подключено, подписка на {len(topics)} топиков")
         ws.send(json.dumps({"op": "subscribe", "args": topics}))
         self._delay = 1
+
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
@@ -309,21 +316,22 @@ class BybitMonitor(BaseMonitor):
                 logger.info(f"[{self.name}] Подписка: {data.get('success')}")
                 return
             topic = data.get("topic", "")
-            if "liquidation" not in topic.lower(): return
+            if "liquidation" not in topic.lower():
+                return
             d = data.get("data", {})
             items = d if isinstance(d, list) else [d]
             for item in items:
-                symbol = item.get("symbol", "")
-                side = item.get("side", "")
-                size = float(item.get("size", 0))
-                price = float(item.get("price", 0))
-                value = size * price
+                # Bybit allLiquidation использует КРАТКИЕ имена полей
+                symbol = item.get("s", "")            # символ
+                side   = item.get("S", "")            # сторона
+                size   = float(item.get("v", 0))      # объём
+                price  = float(item.get("p", 0))      # цена
+                value  = size * price
                 logger.info(f"[{self.name}] {symbol} {side} {size:.4f} @ {price:.4f} → ${value:,.2f}")
                 if value >= MIN_LIQ_USD:
                     send_telegram(format_liq_msg("Bybit", symbol, side, price, size, value))
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка: {e} | {message[:200]}")
-
 # ─── Hyperliquid ────────────────────────────────────────────
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
