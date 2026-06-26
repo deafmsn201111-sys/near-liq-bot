@@ -374,21 +374,25 @@ class BybitMonitor(BaseMonitor):
                         break
         threading.Thread(target=_heartbeat, daemon=True, name="Bybit-HB").start()
 
-    def on_message(self, ws, message):
+        def on_message(self, ws, message):
         try:
             data = json.loads(message)
 
             # Heartbeat / подтверждение подписки
-            if "success" in data or data.get("op") == "pong":
+            is_pong = data.get("op") == "pong" or data.get("ret_msg") == "pong"
+            if "success" in data or is_pong:
                 if data.get("success") is False:
                     logger.warning(f"[{self.name}] Подписка отклонена: {data}")
-                elif data.get("op") == "pong":
+                elif is_pong:
                     logger.debug(f"[{self.name}] pong")
                 else:
-                    logger.info(f"[{self.name}] Подписка подтверждена")
+                    # Подписка подтверждена — логируем только при первом подключении
+                    if not getattr(self, '_sub_logged', False):
+                        logger.info(f"[{self.name}] Подписка подтверждена")
+                        self._sub_logged = True
+                    else:
+                        logger.debug(f"[{self.name}] Подписка подтверждена (повтор)")
                 return
-
-            topic = data.get("topic", "")
 
             # ── Топик tickers.* : обновляем кеш mark-price ─────────────
             if topic.startswith("tickers."):
