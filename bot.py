@@ -14,11 +14,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)-16s | %(levelname)-5s | %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("bot.log", encoding="utf-8")],
 )
 logger = logging.getLogger("CORE")
 
-# ─── HTTP Server ────────────────────────────────────────────
+# ─── HTTP Server + Test Endpoint ────────────────────────────
 class PingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/ping", "/health"):
@@ -31,7 +31,8 @@ class PingHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            html = "<html><body><h2>Test Results</h2><pre>" + results + "</pre></body></html>"
+            html = "<html><body><h2>Тест ликвидаций</h2><pre>" + results + "</pre>"
+            html += "<p><a href='/test'>Повторить</a> | <a href='/ping'>Ping</a></p></body></html>"
             self.wfile.write(html.encode("utf-8"))
         else:
             self.send_response(404)
@@ -47,96 +48,109 @@ def start_http_server():
 # ─── Test Simulation ────────────────────────────────────────
 def run_test_simulation():
     log = []
-    log.append("=== TEST SIMULATION ===")
-    
-    # Test Bybit NEAR
-    msg1 = json.dumps({
-        "topic": "liquidation.NEARUSDT",
+    log.append("═══════════════════════════════════")
+    log.append("Запуск симуляции ликвидаций")
+    log.append(f"   Порог: ${MIN_LIQ_USD:,.0f}")
+    log.append(f"   TG: {TELEGRAM_CHAT_ID}")
+    log.append("═══════════════════════════════════\n")
+
+    # ТЕСТ 1: Bybit NEAR
+    log.append("[ТЕСТ 1] Bybit NEAR Лонг $161,250")
+    msg = json.dumps({
+        "topic": "allLiquidation.NEARUSDT",
         "type": "snapshot",
-        "data": {
-            "symbol": "NEARUSDT",
-            "side": "Sell",
-            "size": "75000",
-            "price": "2.15",
-            "updatedTime": int(time.time()*1000)
-        }
+        "ts": int(time.time()*1000),
+        "data": [{
+            "T": int(time.time()*1000),
+            "s": "NEARUSDT",
+            "S": "Sell",
+            "v": "75000",
+            "p": "2.15"
+        }]
     })
-    m1 = BybitMonitor()
-    m1.on_message(None, msg1)
-    log.append("Test 1 (Bybit NEAR): sent")
+    try:
+        BybitMonitor().on_message(None, msg)
+        log.append("  -> отправлено")
+    except Exception as e:
+        log.append(f"  -> ОШИБКА: {e}")
     time.sleep(4)
 
-    # Test Bybit BTC
-    msg2 = json.dumps({
-        "topic": "liquidation.BTCUSDT",
+    # ТЕСТ 2: Bybit BTC
+    log.append("\n[ТЕСТ 2] Bybit BTC Шорт $234,500")
+    msg = json.dumps({
+        "topic": "allLiquidation.BTCUSDT",
         "type": "snapshot",
-        "data": {
-            "symbol": "BTCUSDT",
-            "side": "Buy",
-            "size": "3.5",
-            "price": "67000",
-            "updatedTime": int(time.time()*1000)
-        }
+        "ts": int(time.time()*1000),
+        "data": [{
+            "T": int(time.time()*1000),
+            "s": "BTCUSDT",
+            "S": "Buy",
+            "v": "3.5",
+            "p": "67000"
+        }]
     })
-    m2 = BybitMonitor()
-    m2.on_message(None, msg2)
-    log.append("Test 2 (Bybit BTC): sent")
+    try:
+        BybitMonitor().on_message(None, msg)
+        log.append("  -> отправлено")
+    except Exception as e:
+        log.append(f"  -> ОШИБКА: {e}")
     time.sleep(4)
 
-    # Test Binance NEAR
-    msg3 = json.dumps({
+    # ТЕСТ 3: Binance NEAR
+    log.append("\n[ТЕСТ 3] Binance NEAR Лонг $107,250")
+    msg = json.dumps({
         "e": "forceOrder",
         "E": int(time.time()*1000),
         "o": {
-            "s": "NEARUSDT",
-            "S": "SELL",
-            "o": "LIMIT",
-            "f": "IOC",
-            "q": "50000",
-            "p": "2.15",
-            "ap": "2.145",
-            "X": "FILLED",
-            "l": "50000",
-            "z": "107250",
+            "s": "NEARUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC",
+            "q": "50000", "p": "2.15", "ap": "2.145",
+            "X": "FILLED", "l": "50000", "z": "107250",
             "T": int(time.time()*1000)
         }
     })
-    m3 = BinanceMonitor()
-    m3.on_message(None, msg3)
-    log.append("Test 3 (Binance NEAR): sent")
+    try:
+        BinanceMonitor().on_message(None, msg)
+        log.append("  -> отправлено")
+    except Exception as e:
+        log.append(f"  -> ОШИБКА: {e}")
     time.sleep(4)
 
-    # Test Hyperliquid BTC
-    msg4 = json.dumps({
+    # ТЕСТ 4: Hyperliquid
+    log.append("\n[ТЕСТ 4] Hyperliquid BTC $335,000")
+    msg = json.dumps({
         "channel": "trades",
         "data": {
             "coin": "BTC",
             "trades": [{
-                "coin": "BTC",
-                "side": "S",
-                "px": "67000",
-                "sz": "5.0",
+                "coin": "BTC", "side": "S", "px": "67000", "sz": "5.0",
                 "time": int(time.time()*1000),
-                "hash": "0xtest",
-                "tid": 99999,
+                "hash": "0xtest", "tid": 99999,
                 "liquidation": {
-                    "liquidatedUser": "0xtestuser123",
+                    "liquidatedUser": "0xtestuser123456789",
                     "markPx": "67000"
                 }
             }]
         }
     })
-    m4 = HyperliquidMonitor()
-    m4.on_message(None, msg4)
-    log.append("Test 4 (Hyperliquid BTC): sent")
+    try:
+        HyperliquidMonitor().on_message(None, msg)
+        log.append("  -> отправлено")
+    except Exception as e:
+        log.append(f"  -> ОШИБКА: {e}")
     time.sleep(4)
 
-    # Test Direct Telegram
-    msg5 = format_liq_msg("TEST", "BTCUSDT", "SELL", 67000.0, 3.5, 234500.0)
-    r5 = send_telegram(msg5)
-    log.append(f"Test 5 (Direct TG): {r5}")
+    # ТЕСТ 5: Прямая отправка
+    log.append("\n[ТЕСТ 5] Прямая отправка в Telegram")
+    try:
+        msg = format_liq_msg("TEST", "BTCUSDT", "SELL", 67000.0, 3.5, 234500.0)
+        result = send_telegram(msg)
+        log.append(f"  -> результат: {result}")
+    except Exception as e:
+        log.append(f"  -> ОШИБКА: {e}")
 
-    log.append("=== DONE. Check Telegram for 5 messages ===")
+    log.append("\n═══════════════════════════════════")
+    log.append("Симуляция завершена. Проверь Telegram.")
+    log.append("═══════════════════════════════════")
     return "\n".join(log)
 
 # ─── Telegram ───────────────────────────────────────────────
@@ -191,13 +205,14 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
         msg += "\n\n🔥 <b>Крупная ликвидация</b>"
     return msg
 
-# ─── Base Monitor ───────────────────────────────────────────
+# ─── Base Monitor (с улучшенным переподключением) ───────────
 class BaseMonitor:
     name = "BASE"
     def __init__(self):
         self.ws = None
         self._delay = 1
         self._running = True
+        self._last_ping = time.time()
     def on_message(self, ws, message): pass
     def on_open(self, ws): pass
     def on_error(self, ws, error):
@@ -208,7 +223,7 @@ class BaseMonitor:
             self._reconnect()
     def _reconnect(self):
         d = min(self._delay, 30)
-        logger.info(f"[{self.name}] Переподключение через {d} сек...")
+        logger.info(f"[{self.name}] Переподключение через {d}с...")
         time.sleep(d)
         self._delay = min(self._delay * 2, 30)
         if self._running:
@@ -217,8 +232,15 @@ class BaseMonitor:
     def url(self):
         raise NotImplementedError
     def run(self):
-        self.ws = websocket.WebSocketApp(self.url, on_message=self.on_message, on_error=self.on_error, on_close=self.on_close, on_open=self.on_open)
-        self.ws.run_forever(ping_interval=20, ping_timeout=10)
+        self.ws = websocket.WebSocketApp(
+            self.url,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_open=self.on_open,
+        )
+        # КРИТИЧНО: ping каждые 5 секунд (Render убивает через ~10с без трафика)
+        self.ws.run_forever(ping_interval=5, ping_timeout=3)
     def start_thread(self):
         t = threading.Thread(target=self.run, daemon=True, name=self.name)
         t.start()
@@ -259,14 +281,15 @@ class BinanceMonitor(BaseMonitor):
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка: {e} | {message[:200]}")
 
-# ─── Bybit ──────────────────────────────────────────────────
+# ─── Bybit (ИСПРАВЛЕНО: allLiquidation + формат данных) ──────
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
     @property
     def url(self):
         return "wss://stream.bybit.com/v5/public/linear"
     def on_open(self, ws):
-        topics = [f"liquidation.{s}" for s in BYBIT_SYMBOLS]
+        # ИСПРАВЛЕНО: правильный топик allLiquidation.<symbol>
+        topics = [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]
         logger.info(f"[{self.name}] ✅ Подключено, подписка: {topics}")
         ws.send(json.dumps({"op": "subscribe", "args": topics}))
         self._delay = 1
@@ -274,31 +297,27 @@ class BybitMonitor(BaseMonitor):
         try:
             data = json.loads(message)
             if "success" in data:
-                logger.info(f"[{self.name}] Подписка: {data.get('success')}")
+                status = data.get("success")
+                if not status:
+                    # Если подписка отклонена — покажем почему
+                    logger.warning(f"[{self.name}] Подписка отклонена: {data}")
+                else:
+                    logger.info(f"[{self.name}] Подписка подтверждена")
                 return
             topic = data.get("topic", "")
-            if "liquidation" not in topic.lower():
-                return
+            if "liquidation" not in topic.lower(): return
             d = data.get("data", {})
-
-            # Bybit liquidation sends data as a single OBJECT, not array
-            if isinstance(d, list):
-                items = d
-            elif isinstance(d, dict):
-                items = [d]
-            else:
-                return
-
+            items = d if isinstance(d, list) else [d]
             for item in items:
-                symbol = item.get("symbol", "")
-                side = item.get("side", "")
-                size = float(item.get("size", 0))
-                price = float(item.get("price", 0))
-                value = size * price
-                if value > 0:
-                    logger.info(f"[{self.name}] {symbol} {side} {size:.4f} @ {price:.4f} → ${value:,.2f}")
-                    if value >= MIN_LIQ_USD:
-                        send_telegram(format_liq_msg("Bybit", symbol, side, price, size, value))
+                # allLiquidation использует другие ключи: s, S, v, p
+                symbol = item.get("s", item.get("symbol", ""))
+                side   = item.get("S", item.get("side", ""))
+                size   = float(item.get("v", item.get("size", 0)))
+                price  = float(item.get("p", item.get("price", 0)))
+                value  = size * price
+                logger.info(f"[{self.name}] {symbol} {side} {size:.4f} @ {price:.4f} → ${value:,.2f}")
+                if value >= MIN_LIQ_USD:
+                    send_telegram(format_liq_msg("Bybit", symbol, side, price, size, value))
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка: {e} | {message[:200]}")
 
@@ -324,19 +343,18 @@ class HyperliquidMonitor(BaseMonitor):
             if channel == "subscriptionResponse":
                 logger.info(f"[{self.name}] Подписка подтверждена")
                 return
-            if channel != "trades":
-                return
+            if channel != "trades": return
             trades_data = data.get("data", {})
             trades = trades_data if isinstance(trades_data, list) else trades_data.get("trades", [])
             if isinstance(trades_data, dict) and "coin" in trades_data:
                 trades = [trades_data] if "side" in trades_data else trades_data.get("trades", [trades_data])
             for t in trades:
-                coin = t.get("coin", "")
-                side = t.get("side", "")
-                px = float(t.get("px", 0))
-                sz = float(t.get("sz", 0))
+                coin  = t.get("coin", "")
+                side  = t.get("side", "")
+                px    = float(t.get("px", 0))
+                sz    = float(t.get("sz", 0))
                 value = px * sz
-                liq = t.get("liquidation")
+                liq   = t.get("liquidation")
                 if not liq: continue
                 liq_user = liq.get("liquidatedUser", "?")[:10] + "…"
                 logger.info(f"[{self.name}] LIQ {coin} {side} {sz:.4f} @ {px:.4f} → ${value:,.2f} (user={liq_user})")
@@ -367,6 +385,7 @@ def main():
         time.sleep(1.5)
     logger.info("✅ Все мониторы запущены")
     def shutdown(signum, frame):
+        logger.info(f"Сигнал {signum} — остановка...")
         for m in monitors:
             m.stop()
         sys.exit(0)
