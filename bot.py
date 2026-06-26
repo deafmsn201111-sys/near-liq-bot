@@ -343,16 +343,27 @@ class BinanceMonitor(BaseMonitor):
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
 
+    def __init__(self):
+        super().__init__()
+        # Кеш mark-price по символам, обновляется из топика tickers.*
+        self._mark_prices = {}
+        self._mp_lock = threading.Lock()
+
     @property
     def url(self):
         return "wss://stream.bybit.com/v5/public/linear"
 
     def on_open(self, ws):
-        topics = [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]
-        logger.info(f"[{self.name}] ✅ Подключено, подписка: {topics}")
+        liq_topics = [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]
+        ticker_topics = [f"tickers.{s}" for s in BYBIT_SYMBOLS]
+        topics = liq_topics + ticker_topics
+        logger.info(
+            f"[{self.name}] ✅ Подключено, подписка: "
+            f"{len(liq_topics)} liquidation + {len(ticker_topics)} tickers"
+        )
         ws.send(json.dumps({"op": "subscribe", "args": topics}))
         self._delay = 1
-        # Bybit closes connection after 20s of silence — send app-level ping every 18s
+        # Bybit закрывает соединение после 20с тишины — пинг каждые 18с
         def _heartbeat():
             while self._running and self.ws is ws:
                 time.sleep(18)
@@ -367,17 +378,37 @@ class BybitMonitor(BaseMonitor):
         try:
             data = json.loads(message)
 
-            # Heartbeat / subscription confirmation
+            # Heartbeat / подтверждение подписки
             if "success" in data or data.get("op") == "pong":
                 if data.get("success") is False:
                     logger.warning(f"[{self.name}] Подписка отклонена: {data}")
                 elif data.get("op") == "pong":
-                    logger.debug(f"[{self.name}] pong")  # heartbeat ACK — не засоряем лог
+                    logger.debug(f"[{self.name}] pong")
                 else:
                     logger.info(f"[{self.name}] Подписка подтверждена")
                 return
 
             topic = data.get("topic", "")
+
+            # ── Топик tickers.* : обновляем кеш mark-price ─────────────
+            if topic.startswith("tickers."):
+                d = data.get("data", {})
+                if isinstance(d, list):
+                    d = d[0] if d else {}
+                symbol = d.get("symbol", "")
+                mark_price_str = d.get("markPrice")
+                if symbol and mark_price_str:
+                    try:
+                        mp = float(mark_price_str)
+                        if mp > 0:
+                            with self._mp_lock:
+                                self._mark_prices[symbol] = mp
+                            logger.debug(f"[{self.name}] mark {symbol}={mp}")
+                    except (ValueError, TypeError):
+                        pass
+                return
+
+            # ── Топик allLiquidation.* : берём mark price из кеша ───────
             if "liquidation" not in topic.lower():
                 return
 
@@ -387,10 +418,26 @@ class BybitMonitor(BaseMonitor):
                 symbol = item.get("s", item.get("symbol", ""))
                 side   = item.get("S", item.get("side", ""))
                 size   = float(item.get("v", item.get("size", 0)))
-                price  = float(item.get("p", item.get("price", 0)))
-                value  = size * price
+                exec_price = float(item.get("p", item.get("price", 0)))
 
-                logger.info(f"[{self.name}] {symbol} {side} {size:.4f} @ {price:.4f} → {fmt_usd(value)}")
+                # Берём текущий mark price из кеша; если ещё не успели
+                # получить — fallback на цену исполнения.
+                with self._mp_lock:
+                    mark_price = self._mark_prices.get(symbol, 0.0)
+
+                if mark_price > 0:
+                    price = mark_price
+                    price_src = "mark"
+                else:
+                    price = exec_price
+                    price_src = "liq"
+
+                value = size * price
+
+                logger.info(
+                    f"[{self.name}] {symbol} {side} {size:.4f} @ {price:.4f} "
+                    f"({price_src}; exec={exec_price:.4f}) → {fmt_usd(value)}"
+                )
                 if value >= MIN_LIQ_USD:
                     send_telegram(format_liq_msg("Bybit", symbol, side, price, size, value))
         except Exception as e:
