@@ -242,6 +242,17 @@ class BaseMonitor:
         self._delay = 1
         self._running = True
 
+    # ── Настройки keepalive — переопределяются в подклассах ──
+    @property
+    def ws_ping_interval(self):
+        """Интервал WebSocket-пингов (сек). 0 = отключено."""
+        return 0
+
+    @property
+    def ws_ping_timeout(self):
+        """Таймаут ожидания pong (сек). None = без таймаута."""
+        return None
+
     def on_message(self, ws, message):
         pass
 
@@ -252,9 +263,11 @@ class BaseMonitor:
         logger.error(f"[{self.name}] WS ошибка: {error}")
 
     def on_close(self, ws, code, msg):
-        logger.warning(f"[{self.name}] WS закрыт ({code})")
         if self._running:
+            logger.warning(f"[{self.name}] WS закрыт (code={code}, msg={msg}), переподключение...")
             self._reconnect()
+        else:
+            logger.info(f"[{self.name}] WS закрыт штатно")
 
     def _reconnect(self):
         d = min(self._delay, 60)
@@ -276,11 +289,10 @@ class BaseMonitor:
             on_close=self.on_close,
             on_open=self.on_open,
         )
-        # Disable library-level TCP pings entirely (ping_interval=0).
-        # Binance sends its own keepalives; Bybit and Hyperliquid need
-        # application-level JSON heartbeats which each monitor handles
-        # in a dedicated thread started from on_open.
-        self.ws.run_forever(ping_interval=0)
+        self.ws.run_forever(
+            ping_interval=self.ws_ping_interval,
+            ping_timeout=self.ws_ping_timeout,
+        )
 
     def start_thread(self):
         t = threading.Thread(target=self.run, daemon=True, name=self.name)
@@ -296,6 +308,14 @@ class BaseMonitor:
 # ─── Binance ────────────────────────────────────────────────
 class BinanceMonitor(BaseMonitor):
     name = "Binance"
+
+    @property
+    def ws_ping_interval(self):
+        return 20  # отправляем WS-ping каждые 20с — держит соединение через прокси
+
+    @property
+    def ws_ping_timeout(self):
+        return 10  # если pong не пришёл за 10с → reconnect
 
     @property
     def url(self):
@@ -456,6 +476,14 @@ class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
 
     @property
+    def ws_ping_interval(self):
+        return 20  # WS-ping каждые 20с на протокольном уровне
+
+    @property
+    def ws_ping_timeout(self):
+        return 10
+
+    @property
     def url(self):
         return "wss://api.hyperliquid.xyz/ws"
 
@@ -468,10 +496,11 @@ class HyperliquidMonitor(BaseMonitor):
             }))
             time.sleep(0.2)
         self._delay = 1
-        # Hyperliquid drops idle connections — send ping every 30s
+        # Hyperliquid: дополнительно application-level ping каждые 20с
+        # (дубль протокольного — для надёжности, HL может не отвечать на WS-ping)
         def _heartbeat():
             while self._running and self.ws is ws:
-                time.sleep(30)
+                time.sleep(20)
                 if self._running and self.ws is ws:
                     try:
                         ws.send(json.dumps({"method": "ping"}))
@@ -488,6 +517,7 @@ class HyperliquidMonitor(BaseMonitor):
                 logger.info(f"[{self.name}] Подписка: {data}")
                 return
             if channel == "pong":
+                logger.debug(f"[{self.name}] pong")
                 return
             if channel != "trades":
                 return
