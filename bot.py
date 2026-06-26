@@ -184,9 +184,9 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
     if s in ("SELL", "S"):
-        emoji, pos = "🔴", "Лонг"
-    elif s in ("BUY", "B"):
         emoji, pos = "🟢", "Шорт"
+    elif s in ("BUY", "B"):
+        emoji, pos = "🔴", "Лонг"
     else:
         emoji, pos = "⚪", s
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
