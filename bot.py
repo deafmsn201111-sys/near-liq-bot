@@ -193,9 +193,9 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     msg = (f"{emoji} <b>Ликвидация {coin}</b>\n\n"
            f"🏦 <b>Биржа:</b> {exchange}\n"
            f"📊 <b>Позиция:</b> {pos}\n"
-           f"💰 <b>Объём:</b> ${value_usd:,.2f}\n"
+           f"💰 <b>Объём:</b> ${value_usd:,.0f}\n"
            f"📈 <b>Кол-во:</b> {qty:,.2f} {coin}\n"
-           f"💵 <b>Цена:</b> ${price:,.4f}\n"
+           f"💵 <b>Цена:</b> ${price:,.2f}\n"
            f"⏰ <b>Время:</b> {now}")
     if extra:
         msg += f"\n{extra}"
