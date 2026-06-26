@@ -371,8 +371,10 @@ class BybitMonitor(BaseMonitor):
             if "success" in data or data.get("op") == "pong":
                 if data.get("success") is False:
                     logger.warning(f"[{self.name}] Подписка отклонена: {data}")
+                elif data.get("op") == "pong":
+                    logger.debug(f"[{self.name}] pong")  # heartbeat ACK — не засоряем лог
                 else:
-                    logger.info(f"[{self.name}] Подписка подтверждена / pong")
+                    logger.info(f"[{self.name}] Подписка подтверждена")
                 return
 
             topic = data.get("topic", "")
