@@ -191,7 +191,7 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
         emoji, pos = "⚪", s
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     
-msg = (f"{emoji} <b>{coin}</b> Liquidated {pos}: ${value_usd:,.0f} at ${price:,.2f} on {exchange}")
+    msg = (f"{emoji} <b>{coin}</b> Liquidated {pos}: ${value_usd:,.0f} at ${price:,.2f} on {exchange}")
     if extra:
         msg += f"\n{extra}"
     if value_usd >= 500000:
