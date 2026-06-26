@@ -276,9 +276,11 @@ class BaseMonitor:
             on_close=self.on_close,
             on_open=self.on_open,
         )
-        # FIX: Binance drops connection with too-frequent pings.
-        # Bybit/HL are fine with 20s. Keep ping_timeout generous.
-        self.ws.run_forever(ping_interval=20, ping_timeout=10)
+        # Disable library-level TCP pings entirely (ping_interval=0).
+        # Binance sends its own keepalives; Bybit and Hyperliquid need
+        # application-level JSON heartbeats which each monitor handles
+        # in a dedicated thread started from on_open.
+        self.ws.run_forever(ping_interval=0)
 
     def start_thread(self):
         t = threading.Thread(target=self.run, daemon=True, name=self.name)
@@ -350,6 +352,16 @@ class BybitMonitor(BaseMonitor):
         logger.info(f"[{self.name}] ✅ Подключено, подписка: {topics}")
         ws.send(json.dumps({"op": "subscribe", "args": topics}))
         self._delay = 1
+        # Bybit closes connection after 20s of silence — send app-level ping every 18s
+        def _heartbeat():
+            while self._running and self.ws is ws:
+                time.sleep(18)
+                if self._running and self.ws is ws:
+                    try:
+                        ws.send(json.dumps({"op": "ping"}))
+                    except Exception:
+                        break
+        threading.Thread(target=_heartbeat, daemon=True, name="Bybit-HB").start()
 
     def on_message(self, ws, message):
         try:
@@ -400,6 +412,16 @@ class HyperliquidMonitor(BaseMonitor):
             }))
             time.sleep(0.2)
         self._delay = 1
+        # Hyperliquid drops idle connections — send ping every 30s
+        def _heartbeat():
+            while self._running and self.ws is ws:
+                time.sleep(30)
+                if self._running and self.ws is ws:
+                    try:
+                        ws.send(json.dumps({"method": "ping"}))
+                    except Exception:
+                        break
+        threading.Thread(target=_heartbeat, daemon=True, name="HL-HB").start()
 
     def on_message(self, ws, message):
         try:
