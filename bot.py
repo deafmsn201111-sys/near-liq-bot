@@ -184,25 +184,20 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
     if s in ("SELL", "S"):
-        emoji, pos = "🟢", "Шорт"
+        emoji, pos = "🟢", "Short"
     elif s in ("BUY", "B"):
-        emoji, pos = "🔴", "Лонг"
+        emoji, pos = "🔴", "Long"
     else:
         emoji, pos = "⚪", s
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    msg = (f"{emoji} <b>Ликвидация {coin}</b>\n\n"
-           f"🏦 <b>Биржа:</b> {exchange}\n"
-           f"📊 <b>Позиция:</b> {pos}\n"
-           f"💰 <b>Объём:</b> ${value_usd:,.0f}\n"
-           f"📈 <b>Кол-во:</b> {qty:,.2f} {coin}\n"
-           f"💵 <b>Цена:</b> ${price:,.2f}\n"
-           f"⏰ <b>Время:</b> {now}")
+    
+msg = (f"{emoji} #{coin} Liquidated {pos}: ${value_usd:,.0f} at ${price:,.2f} on {exchange}")
     if extra:
         msg += f"\n{extra}"
     if value_usd >= 500000:
-        msg += "\n\n🔥🔥🔥 <b>ОЧЕНЬ КРУПНАЯ!</b>"
+        msg += "\n\n🔥🔥🔥 <b>HUGE!</b>"
     elif value_usd >= 200000:
-        msg += "\n\n🔥 <b>Крупная ликвидация</b>"
+        msg += "\n\n🔥 <b>BIG!</b>"
     return msg
 
 # ─── Base Monitor (с улучшенным переподключением) ───────────
