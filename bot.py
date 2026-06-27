@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, sys, json, time, threading, logging, signal
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
@@ -10,18 +11,32 @@ from config import (
     MIN_MSG_INTERVAL, HTTP_PORT,
 )
 
+# Настройка автоматической ротации логов (макс размер 5 МБ, хранить до 3 архивных файлов)
+file_handler = RotatingFileHandler(
+    "bot.log", 
+    maxBytes=5 * 1024 * 1024, 
+    backupCount=3, 
+    encoding="utf-8"
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)-16s | %(levelname)-5s | %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("bot.log", encoding="utf-8")],
+    handlers=[logging.StreamHandler(sys.stdout), file_handler],
 )
 logger = logging.getLogger("CORE")
 
 
+# Кэш для хранения актуальных цен маркировки Binance
+# Кэшируем локально, чтобы не слать тяжелые REST-запросы на биржу при каждой ликвидации
+binance_mark_prices = {}
+binance_prices_lock = threading.Lock()
+
+
 # ─── Helpers ────────────────────────────────────────────────
 def fmt_usd(value: float) -> str:
-    """Compact USD formatting: 1234 → $1.2k, 1234567 → $1.2m"""
+    """Компактное форматирование USD: 1234 → $1.2k, 1234567 → $1.2m"""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}b"
     elif value >= 1_000_000:
@@ -73,7 +88,7 @@ def run_test_simulation():
     log.append(f"   TG: {TELEGRAM_CHAT_ID}")
     log.append("═══════════════════════════════════\n")
 
-    # ТЕСТ 1: Bybit NEAR
+    # ТЕСТ 1: Bybit NEAR (Поле 'p' в Bybit — это Mark Price)
     log.append("[ТЕСТ 1] Bybit NEAR Лонг $161.3k")
     msg = json.dumps({
         "topic": "allLiquidation.NEARUSDT",
@@ -84,7 +99,7 @@ def run_test_simulation():
             "s": "NEARUSDT",
             "S": "Sell",
             "v": "75000",
-            "p": "2.15"
+            "p": "2.15"  # Mark Price
         }]
     })
     try:
@@ -94,15 +109,18 @@ def run_test_simulation():
         log.append(f"  -> ОШИБКА: {e}")
     time.sleep(2)
 
-    # ТЕСТ 2: Binance NEAR
+    # ТЕСТ 2: Binance NEAR (Берет цену из сохраненного кэша markPrice)
     log.append("\n[ТЕСТ 2] Binance NEAR Лонг $107.3k")
+    with binance_prices_lock:
+        binance_mark_prices["NEARUSDT"] = 2.145  # Имитируем получение mark price из стрима
+
     msg = json.dumps({
         "e": "forceOrder",
         "E": int(time.time() * 1000),
         "o": {
             "s": "NEARUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC",
-            "q": "50000", "p": "2.15", "ap": "2.145",
-            "X": "FILLED", "l": "50000", "z": "107250",
+            "q": "50000", "p": "2.10", "ap": "2.08", # цены лимита и исполнения (проскальзывание)
+            "X": "FILLED", "l": "50000", "z": "104000",
             "T": int(time.time() * 1000)
         }
     })
@@ -165,9 +183,9 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
         emoji, pos = "⚪", s
 
     value_str = fmt_usd(value_usd)
-    price_str = f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}"
+    price_str = f"${price:,.4f}" if price < 1.0 else (f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}")
 
-    msg = f"{emoji} <b>{coin}</b> Liquidated {pos}: {value_str} at {price_str} on {exchange}"
+    msg = f"{emoji} <b>{coin}</b> Liquidated {pos}: {value_str} at Mark Price {price_str} on {exchange}"
     if extra:
         msg += f"\n{extra}"
     if value_usd >= 500_000:
@@ -188,12 +206,10 @@ class BaseMonitor:
 
     @property
     def ws_ping_interval(self):
-        """Интервал WebSocket-пингов (сек). 0 = отключено."""
         return 0
 
     @property
     def ws_ping_timeout(self):
-        """Таймаут ожидания pong (сек). None = без таймаута."""
         return None
 
     def on_message(self, ws, message):
@@ -262,8 +278,14 @@ class BinanceMonitor(BaseMonitor):
 
     @property
     def url(self):
-        streams = "/".join(f"{s.lower()}@forceOrder" for s in BINANCE_SYMBOLS)
-        return f"wss://fstream.binance.com/market/stream?streams={streams}"
+        # ИСПРАВЛЕНО: Подписываемся комбинированно и на ликвидации (@forceOrder), и на цену маркировки (@markPrice)
+        streams = []
+        for s in BINANCE_SYMBOLS:
+            streams.append(f"{s.lower()}@forceOrder")
+            streams.append(f"{s.lower()}@markPrice@1s") # Частота обновления 1 секунда для точности
+        
+        streams_str = "/".join(streams)
+        return f"wss://fstream.binance.com/market/stream?streams={streams_str}"
 
     def on_open(self, ws):
         logger.info(f"[{self.name}] ✅ Подключено ({', '.join(BINANCE_SYMBOLS)})")
@@ -277,7 +299,19 @@ class BinanceMonitor(BaseMonitor):
             else:
                 inner = data
 
-            if inner.get("e") != "forceOrder":
+            event_type = inner.get("e")
+
+            # 1. Если это обновление цены маркировки — сохраняем её в глобальный кэш
+            if event_type == "markPriceUpdate":
+                symbol = inner.get("s")
+                mark_price = float(inner.get("p", 0))
+                if symbol and mark_price > 0:
+                    with binance_prices_lock:
+                        binance_mark_prices[symbol] = mark_price
+                return
+
+            # 2. Если событие ликвидации
+            if event_type != "forceOrder":
                 return
 
             o = inner.get("o", {})
@@ -287,12 +321,18 @@ class BinanceMonitor(BaseMonitor):
             symbol = o.get("s", "")
             side = o.get("S", "")
             qty = float(o.get("q", 0))
-            price = float(o.get("ap", 0) or o.get("p", 0))
-            value = float(o.get("z", 0))
-            if value == 0:
-                value = qty * price
+            
+            # ИСПРАВЛЕНО: Извлекаем Mark Price из нашего локального кэша маркировок
+            with binance_prices_lock:
+                price = binance_mark_prices.get(symbol, 0.0)
+            
+            # Если в кэше пусто (например, только запустились), берем цену исполнения в качестве резервной
+            if price == 0.0:
+                price = float(o.get("ap", 0) or o.get("p", 0))
 
-            logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)}")
+            value = qty * price
+
+            logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.2f})")
 
             if value >= MIN_LIQ_USD:
                 send_telegram(format_liq_msg("Binance", symbol, side, price, qty, value))
@@ -304,7 +344,6 @@ class BinanceMonitor(BaseMonitor):
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
 
-    # ИСПРАВЛЕНО: Добавлен пинг-пул для предотвращения сброса хостом Bybit каждые 60 секунд
     @property
     def ws_ping_interval(self):
         return 20
@@ -342,7 +381,7 @@ class BybitMonitor(BaseMonitor):
                 symbol = item.get("s", "")
                 side = item.get("S", "")
                 qty = float(item.get("v", 0))
-                price = float(item.get("p", 0))
+                price = float(item.get("p", 0)) # В Bybit поле 'p' — это изначально цена маркировки (Mark Price)
                 value = qty * price
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)}")
@@ -357,7 +396,6 @@ class BybitMonitor(BaseMonitor):
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
 
-    # ИСПРАВЛЕНО: Добавлен heartbeat для поддержания сессии Hyperliquid стабильной
     @property
     def ws_ping_interval(self):
         return 20
@@ -400,60 +438,4 @@ class HyperliquidMonitor(BaseMonitor):
                 if not liq:
                     continue
 
-                coin = t.get("coin", "")
-                side = t.get("side", "") 
-                price = float(t.get("px", 0))
-                sz = float(t.get("sz", 0))
-                value = price * sz
-
-                liq_user = liq.get("liquidatedUser", "unknown")
-                liq_user_short = liq_user[:6] + "..." + liq_user[-4:] if len(liq_user) > 10 else liq_user
-
-                logger.info(
-                    f"[{self.name}] Ликвидация {coin} {side} → {fmt_usd(value)} (user={liq_user_short})"
-                )
-
-                if value >= MIN_LIQ_USD:
-                    extra = f"🏷 <b>Адрес:</b> <code>{liq_user_short}</code>"
-                    send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
-        except Exception as e:
-            logger.error(f"[{self.name}] Ошибка: {e} | {str(message)[:200]}")
-
-
-# ─── MAIN ────────────────────────────────────────────────────
-monitors = []
-
-
-def main():
-    logger.info("=" * 60)
-    logger.info("🚀 Liquidation Bot — запуск")
-    logger.info(f"   Binance: {BINANCE_SYMBOLS}")
-    logger.info(f"   Bybit:   {BYBIT_SYMBOLS}")
-    logger.info(f"   HL:      {HYPERLIQUID_COINS}")
-    logger.info(f"   Порог:   {fmt_usd(MIN_LIQ_USD)}")
-    logger.info(f"   Порт:    {HTTP_PORT}")
-    logger.info(f"   TG:      {TELEGRAM_CHAT_ID}")
-    logger.info("=" * 60)
-
-    http_thread = threading.Thread(target=start_http_server, daemon=True)
-    http_thread.start()
-
-    monitors.extend([BinanceMonitor(), BybitMonitor(), HyperliquidMonitor()])
-    for m in monitors:
-        m.start_thread()
-        time.sleep(1.5)
-
-    logger.info("Бот успешно запущен. Нажмите Ctrl+C для выхода.")
-
-    try:
-        while True:
-            time.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Остановка бота...")
-        for m in monitors:
-            m.stop()
-        sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()
+                coin
