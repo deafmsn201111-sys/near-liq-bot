@@ -204,7 +204,7 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     value_str = fmt_usd(value_usd)
     price_str = f"${price:,.4f}" if price < 1.0 else (f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}")
 
-    msg = f"{emoji} <b>{coin}</b> Liquidated {pos}: {value_str} @ Mark Price {price_str} | {exchange}"
+    msg = f"{emoji} <b>{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
     if extra:
         msg += f"\n{extra}"
     if value_usd >= 500_000:
