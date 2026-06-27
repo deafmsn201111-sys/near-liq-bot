@@ -111,9 +111,9 @@ def format_liq_msg(exchange: str, symbol: str, side: str,
     coin = symbol.replace("USDT", "").replace("usdt", "")
 
     if s == "LONG":
-        emoji, pos = "🔴", "Long"
-    elif s == "SHORT":
         emoji, pos = "🟢", "Short"
+    elif s == "SHORT":
+        emoji, pos = "🔴", "Long"
     else:
         emoji, pos = "⚪", s
 
