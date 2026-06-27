@@ -121,7 +121,7 @@ def format_liq_msg(exchange: str, symbol: str, side: str,
     price_str = f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}"
 
     msg = (
-        f"{emoji} <b>{coin}</b> Ликвидация {pos}: "
+        f"{emoji} <b>{coin}</b> Liquidated {pos}: "
         f"{value_str} @ {price_str} | {exchange}"
     )
     if extra:
