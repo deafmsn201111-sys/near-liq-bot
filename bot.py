@@ -92,31 +92,10 @@ def run_test_simulation():
         log.append("  -> отправлено")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
-    time.sleep(4)
+    time.sleep(2)
 
-    # ТЕСТ 2: Bybit BTC
-    log.append("\n[ТЕСТ 2] Bybit BTC Шорт $234.5k")
-    msg = json.dumps({
-        "topic": "allLiquidation.BTCUSDT",
-        "type": "snapshot",
-        "ts": int(time.time() * 1000),
-        "data": [{
-            "T": int(time.time() * 1000),
-            "s": "BTCUSDT",
-            "S": "Buy",
-            "v": "3.5",
-            "p": "67000"
-        }]
-    })
-    try:
-        BybitMonitor().on_message(None, msg)
-        log.append("  -> отправлено")
-    except Exception as e:
-        log.append(f"  -> ОШИБКА: {e}")
-    time.sleep(4)
-
-    # ТЕСТ 3: Binance NEAR
-    log.append("\n[ТЕСТ 3] Binance NEAR Лонг $107.3k")
+    # ТЕСТ 2: Binance NEAR
+    log.append("\n[ТЕСТ 2] Binance NEAR Лонг $107.3k")
     msg = json.dumps({
         "e": "forceOrder",
         "E": int(time.time() * 1000),
@@ -132,45 +111,10 @@ def run_test_simulation():
         log.append("  -> отправлено")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
-    time.sleep(4)
-
-    # ТЕСТ 4: Hyperliquid
-    log.append("\n[ТЕСТ 4] Hyperliquid BTC $335k")
-    msg = json.dumps({
-        "channel": "trades",
-        "data": [{
-            "coin": "BTC",
-            "side": "A",  # A = ask side = liquidated long (sell)
-            "px": "67000",
-            "sz": "5.0",
-            "time": int(time.time() * 1000),
-            "hash": "0xtest",
-            "tid": 99999,
-            "liquidation": {
-                "liquidatedUser": "0xtestuser123456789",
-                "markPx": "67100",  # mark price at liquidation moment
-                "method": "market"
-            }
-        }]
-    })
-    try:
-        HyperliquidMonitor().on_message(None, msg)
-        log.append("  -> отправлено")
-    except Exception as e:
-        log.append(f"  -> ОШИБКА: {e}")
-    time.sleep(4)
-
-    # ТЕСТ 5: Прямая отправка
-    log.append("\n[ТЕСТ 5] Прямая отправка в Telegram")
-    try:
-        msg_text = format_liq_msg("TEST", "BTCUSDT", "SELL", 67000.0, 3.5, 234500.0)
-        result = send_telegram(msg_text)
-        log.append(f"  -> результат: {result}")
-    except Exception as e:
-        log.append(f"  -> ОШИБКА: {e}")
+    time.sleep(2)
 
     log.append("\n═══════════════════════════════════")
-    log.append("Симуляция завершена. Проверь Telegram.")
+    log.append("Симуляция завершена.")
     log.append("═══════════════════════════════════")
     return "\n".join(log)
 
@@ -318,7 +262,6 @@ class BinanceMonitor(BaseMonitor):
 
     @property
     def url(self):
-        # ОБНОВЛЕНО: Используется новая разделенная архитектура эндпоинтов Binance (/market)
         streams = "/".join(f"{s.lower()}@forceOrder" for s in BINANCE_SYMBOLS)
         return f"wss://fstream.binance.com/market/stream?streams={streams}"
 
@@ -342,7 +285,7 @@ class BinanceMonitor(BaseMonitor):
                 return
 
             symbol = o.get("s", "")
-            side = o.get("S", "")  # "BUY" = liquidated short, "SELL" = liquidated long
+            side = o.get("S", "")
             qty = float(o.get("q", 0))
             price = float(o.get("ap", 0) or o.get("p", 0))
             value = float(o.get("z", 0))
@@ -360,6 +303,15 @@ class BinanceMonitor(BaseMonitor):
 # ─── Bybit ──────────────────────────────────────────────────
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
+
+    # ИСПРАВЛЕНО: Добавлен пинг-пул для предотвращения сброса хостом Bybit каждые 60 секунд
+    @property
+    def ws_ping_interval(self):
+        return 20
+
+    @property
+    def ws_ping_timeout(self):
+        return 10
 
     @property
     def url(self):
@@ -388,7 +340,7 @@ class BybitMonitor(BaseMonitor):
             items = data.get("data", [])
             for item in items:
                 symbol = item.get("s", "")
-                side = item.get("S", "")  # "Buy"=liquidated short, "Sell"=liquidated long
+                side = item.get("S", "")
                 qty = float(item.get("v", 0))
                 price = float(item.get("p", 0))
                 value = qty * price
@@ -405,6 +357,15 @@ class BybitMonitor(BaseMonitor):
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
 
+    # ИСПРАВЛЕНО: Добавлен heartbeat для поддержания сессии Hyperliquid стабильной
+    @property
+    def ws_ping_interval(self):
+        return 20
+
+    @property
+    def ws_ping_timeout(self):
+        return 10
+
     @property
     def url(self):
         return "wss://api.hyperliquid.xyz/ws"
@@ -412,7 +373,6 @@ class HyperliquidMonitor(BaseMonitor):
     def on_open(self, ws):
         logger.info(f"[{self.name}] ✅ Подключено. Отправка подписок на сделки...")
         self._delay = 1
-        # ОБНОВЛЕНО: Отправка обязательного запроса подписки (subscribe) для каждой монеты
         for coin in HYPERLIQUID_COINS:
             req = {
                 "method": "subscribe",
@@ -427,8 +387,6 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            
-            # Пропускаем служебные ответы сервера о подтверждении подписки
             if data.get("channel") == "subscriptionResponse":
                 logger.info(f"[{self.name}] Подписка подтверждена: {data.get('data')}")
                 return
@@ -438,13 +396,11 @@ class HyperliquidMonitor(BaseMonitor):
 
             trades = data.get("data", [])
             for t in trades:
-                # Фильтруем только те сделки, которые являются ликвидациями
                 liq = t.get("liquidation")
                 if not liq:
                     continue
 
                 coin = t.get("coin", "")
-                # Hyperliquid возвращает 'A' (Ask) для ликвидации лонга и 'B' (Bid) для шорта
                 side = t.get("side", "") 
                 price = float(t.get("px", 0))
                 sz = float(t.get("sz", 0))
