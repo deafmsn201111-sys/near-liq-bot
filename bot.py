@@ -284,4 +284,4 @@ class BinanceMonitor(BaseMonitor):
             streams.append(f"{s.lower()}@markPrice@1s")
         
         streams_str = "/".join(streams)
-        return f"wss://
+        return f"wss://"
