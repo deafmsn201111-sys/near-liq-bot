@@ -12,7 +12,7 @@ from config import (
     MIN_MSG_INTERVAL, HTTP_PORT,
 )
 
-# Настройка автоматической ротации логов (макс размер 5 МБ, хранить до 3 архивных файлов)
+# Автоматическая ротация логов (макс. 5 МБ на файл, хранить до 3 архивов)
 file_handler = RotatingFileHandler(
     "bot.log", 
     maxBytes=5 * 1024 * 1024, 
@@ -29,14 +29,24 @@ logging.basicConfig(
 logger = logging.getLogger("CORE")
 
 
-# Кэш для хранения актуальных цен маркировки Binance
+# Глобальный кэш для сохранения цен маркировки Binance
 binance_mark_prices = {}
 binance_prices_lock = threading.Lock()
 
 
 # ─── Helpers ────────────────────────────────────────────────
+def safe_float(val, default=0.0) -> float:
+    """Безопасное приведение к float для защиты от пустых строк типа '' или None"""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def fmt_usd(value: float) -> str:
-    """Компактное форматирование USD: 1234 → $1.2k, 1234567 → $1.2m"""
+    """Компактное форматирование цен: 1234 -> $1.2k, 1234567 -> $1.2m"""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.2f}b"
     elif value >= 1_000_000:
@@ -62,8 +72,8 @@ class PingHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            html = "<html><body><h2>Тест ликвидаций</h2><pre>" + results + "</pre>"
-            html += "<p><a href='/test'>Повторить</a> | <a href='/ping'>Ping</a></p></body></html>"
+            html = "<html><body><h2>Тест лимитов и направлений ликвидаций</h2><pre>" + results + "</pre>"
+            html += "<p><a href='/test'>Повторить тест</a> | <a href='/ping'>Ping</a></p></body></html>"
             self.wfile.write(html.encode("utf-8"))
         else:
             self.send_response(404)
@@ -75,7 +85,7 @@ class PingHandler(BaseHTTPRequestHandler):
 
 def start_http_server():
     server = HTTPServer(("0.0.0.0", HTTP_PORT), PingHandler)
-    logger.info(f"HTTP сервер на порту {HTTP_PORT}")
+    logger.info(f"HTTP сервер запущен на порту {HTTP_PORT}")
     server.serve_forever()
 
 
@@ -83,76 +93,53 @@ def start_http_server():
 def run_test_simulation():
     log = []
     log.append("═══════════════════════════════════")
-    log.append("Запуск симуляции ликвидаций")
+    log.append("Запуск симуляции проверки лимитов и сторон")
     log.append(f"   Порог Binance:      {fmt_usd(MIN_LIQ_BINANCE)}")
     log.append(f"   Порог Bybit:        {fmt_usd(MIN_LIQ_BYBIT)}")
     log.append(f"   Порог Hyperliquid:  {fmt_usd(MIN_LIQ_HYPERLIQUID)}")
-    log.append(f"   TG: {TELEGRAM_CHAT_ID}")
     log.append("═══════════════════════════════════\n")
 
-    # ТЕСТ 1: Bybit NEAR (Поле 'mp' в Bybit — это Mark Price)
-    sim_bybit = BYBIT_SYMBOLS[0] if BYBIT_SYMBOLS else "NEARUSDT"
-    log.append(f"[ТЕСТ 1] Bybit {sim_bybit} Лонг $161.3k")
+    # ТЕСТ 1: Bybit - Рост цены ликвидирует Шорт (Должен быть зеленый 🟢 Short)
+    sim_bybit = BYBIT_SYMBOLS[0] if BYBIT_SYMBOLS else "BTCUSDT"
+    log.append(f"[ТЕСТ Bybit] Симуляция ЛИКВИДАЦИИ SHORT (рост цены). Отправка ордера BUY на {sim_bybit}")
     msg = json.dumps({
         "topic": f"allLiquidation.{sim_bybit}",
         "type": "snapshot",
-        "ts": int(time.time() * 1000),
         "data": [{
-            "T": int(time.time() * 1000),
             "s": sim_bybit,
-            "S": "Sell",
-            "v": "75000",
-            "p": "2.10",   # Execution Price
-            "mp": "2.15"  # Mark Price
+            "S": "Buy",     # Рост цены -> биржа выкупает шорт-позицию
+            "v": "10",      # Объем
+            "p": "59500",   # Цена банкротства
+            "mp": "60152.5" # Настоящий Mark Price
         }]
     })
     try:
         BybitMonitor().on_message(None, msg)
-        log.append("  -> обработано")
+        log.append("  -> Bybit обработан. Проверьте Telegram (должен быть 🟢 Short и Mark Price $60,152.5)")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
     time.sleep(1)
 
-    # ТЕСТ 2: Binance NEAR
-    sim_binance = BINANCE_SYMBOLS[0] if BINANCE_SYMBOLS else "NEARUSDT"
-    log.append(f"\n[ТЕСТ 2] Binance {sim_binance} Лонг $107.3k")
+    # ТЕСТ 2: Binance - Рост цены ликвидирует Шорт (Должен быть зеленый 🟢 Short)
+    sim_binance = BINANCE_SYMBOLS[0] if BINANCE_SYMBOLS else "BTCUSDT"
+    log.append(f"\n[ТЕСТ Binance] Симуляция ЛИКВИДАЦИИ SHORT (рост цены). Отправка ордера BUY на {sim_binance}")
     with binance_prices_lock:
-        binance_mark_prices[sim_binance] = 2.145
+        binance_mark_prices[sim_binance] = 60152.0
 
     msg = json.dumps({
         "e": "forceOrder",
-        "E": int(time.time() * 1000),
         "o": {
-            "s": sim_binance, "S": "SELL", "o": "LIMIT", "f": "IOC",
-            "q": "50000", "p": "2.10", "ap": "2.08",
-            "X": "FILLED", "l": "50000", "z": "104000",
-            "T": int(time.time() * 1000)
+            "s": sim_binance, 
+            "S": "BUY",     # Рост цены -> биржа откупает шорт
+            "q": "10", 
+            "p": "59500", 
+            "ap": "60100",
+            "X": "FILLED"
         }
     })
     try:
         BinanceMonitor().on_message(None, msg)
-        log.append("  -> обработано")
-    except Exception as e:
-        log.append(f"  -> ОШИБКА: {e}")
-    time.sleep(1)
-
-    # ТЕСТ 3: Hyperliquid
-    sim_hl = HYPERLIQUID_COINS[0] if HYPERLIQUID_COINS else "NEAR"
-    log.append(f"\n[ТЕСТ 3] Hyperliquid {sim_hl} Симуляция")
-    msg = json.dumps({
-        "channel": "liquidations",
-        "data": [
-            {
-                "coin": sim_hl,
-                "liqPrice": "2.15",
-                "szi": "-80000",
-                "user": "0x1234567890abcdef"
-            }
-        ]
-    })
-    try:
-        HyperliquidMonitor().on_message(None, msg)
-        log.append("  -> обработано")
+        log.append("  -> Binance обработан. Проверьте Telegram (должен быть 🟢 Short)")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
 
@@ -175,9 +162,11 @@ def send_telegram(text):
         if elapsed < MIN_MSG_INTERVAL:
             time.sleep(MIN_MSG_INTERVAL - elapsed)
         _last_msg_time = time.time()
+        
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "test":
-        logger.warning("TG_BOT_TOKEN не задан")
+        logger.warning("TG_BOT_TOKEN не настроен в окружении")
         return False
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -190,9 +179,9 @@ def send_telegram(text):
         if r.status_code == 200:
             logger.info("✅ Отправлено в Telegram")
             return True
-        logger.error(f"Telegram API {r.status_code}: {r.text[:200]}")
+        logger.error(f"Telegram API вернул {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        logger.error(f"Ошибка Telegram: {e}")
+        logger.error(f"Ошибка при отправке в Telegram: {e}")
     return False
 
 
@@ -200,7 +189,8 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
     
-    if s in ("SELL", "S", "A", "LONG"):
+    # СТРОГОЕ ОПРЕДЕЛЕНИЕ СТОРОН И СМАЙЛИКОВ
+    if s in ("SELL", "S", "LONG"):
         emoji, pos = "🔴", "Long"
     elif s in ("BUY", "B", "SHORT"):
         emoji, pos = "🟢", "Short"
@@ -210,7 +200,7 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     value_str = fmt_usd(value_usd)
     price_str = f"${price:,.4f}" if price < 1.0 else (f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}")
 
-    msg = f"{emoji} <b>{coin}</b> Liquidated {pos}: {value_str} @ Mark Price {price_str} | {exchange}"
+    msg = f"{emoji} <b>#{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
     if extra:
         msg += f"\n{extra}"
     if value_usd >= 500_000:
@@ -305,15 +295,17 @@ class BinanceMonitor(BaseMonitor):
     def url(self):
         if not BINANCE_SYMBOLS:
             return "wss://fstream.binance.com/market/stream?streams=nearusdt@forceOrder"
+            
         streams = []
         for s in BINANCE_SYMBOLS:
             streams.append(f"{s.lower()}@forceOrder")
             streams.append(f"{s.lower()}@markPrice@1s")
+        
         streams_str = "/".join(streams)
         return f"wss://fstream.binance.com/market/stream?streams={streams_str}"
 
     def on_open(self, ws):
-        logger.info(f"[{self.name}] ✅ Подключено ({', '.join(BINANCE_SYMBOLS)})")
+        logger.info(f"[{self.name}] ✅ Подключено к стримам для: {', '.join(BINANCE_SYMBOLS)}")
         self._delay = 1
 
     def on_message(self, ws, message):
@@ -326,9 +318,10 @@ class BinanceMonitor(BaseMonitor):
 
             event_type = inner.get("e")
 
+            # Сбор и обновление кэша цен маркировки
             if event_type == "markPriceUpdate":
                 symbol = inner.get("s")
-                mark_price = float(inner.get("p", 0))
+                mark_price = safe_float(inner.get("p", 0))
                 if symbol and mark_price > 0:
                     with binance_prices_lock:
                         binance_mark_prices[symbol] = mark_price
@@ -345,18 +338,21 @@ class BinanceMonitor(BaseMonitor):
             if symbol not in BINANCE_SYMBOLS:
                 return
 
-            side = o.get("S", "")
-            qty = float(o.get("q", 0))
+            # Направление на Binance: SELL = закрыли Long, BUY = закрыли Short
+            side_raw = o.get("S", "").upper()
+            side = "LONG" if side_raw == "SELL" else "SHORT"
+
+            qty = safe_float(o.get("q", 0))
             
             with binance_prices_lock:
                 price = binance_mark_prices.get(symbol, 0.0)
             
             if price == 0.0:
-                price = float(o.get("ap", 0) or o.get("p", 0))
+                price = safe_float(o.get("ap") or o.get("p", 0))
 
             value = qty * price
 
-            logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.2f})")
+            logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark: ${price:,.2f})")
 
             if value >= MIN_LIQ_BINANCE:
                 send_telegram(format_liq_msg("Binance", symbol, side, price, qty, value))
@@ -364,7 +360,7 @@ class BinanceMonitor(BaseMonitor):
             logger.error(f"[{self.name}] Ошибка обработки: {e}")
 
 
-# ─── Bybit ──────────────────────────────────────────────────
+# ─── Bybit (ПОЛНОСТЬЮ ИСПРАВЛЕН) ─────────────────────────────
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
 
@@ -384,6 +380,7 @@ class BybitMonitor(BaseMonitor):
         if not BYBIT_SYMBOLS:
             logger.warning(f"[{self.name}] Список подписок Bybit пуст.")
             return
+            
         logger.info(f"[{self.name}] ✅ Подключено. Отправка подписок на {len(BYBIT_SYMBOLS)} пар...")
         self._delay = 1
         req = {
@@ -409,11 +406,15 @@ class BybitMonitor(BaseMonitor):
                 if symbol not in BYBIT_SYMBOLS:
                     continue
 
-                side = item.get("S", "")
-                qty = float(item.get("v", 0))
+                # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН:
+                # На Bybit: ордер "Sell" закрывает Long-позицию. Ордер "Buy" закрывает Short-позицию.
+                side_raw = item.get("S", "")
+                side = "LONG" if side_raw.lower() == "sell" else "SHORT"
+
+                qty = safe_float(item.get("v", 0))
                 
-                # ИСПРАВЛЕНО: Читаем из поля 'mp' (Mark Price) вместо поля 'p' (Execution Price)
-                price = float(item.get("mp", 0) or item.get("p", 0))
+                # ИСПРАВЛЕНИЕ ЦЕНЫ: Поле 'mp' содержит подлинный Mark Price (в отличие от 'p' - цены банкротства)
+                price = safe_float(item.get("mp") or item.get("p", 0))
                 value = qty * price
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.4f})")
@@ -454,6 +455,7 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
+            
             if data.get("channel") == "subscriptionResponse":
                 logger.info(f"[{self.name}] Подписка успешно подтверждена биржей.")
                 return
@@ -466,25 +468,28 @@ class HyperliquidMonitor(BaseMonitor):
 
             for liq in liquidations:
                 coin = liq.get("coin", "")
+                
                 if coin not in HYPERLIQUID_COINS:
                     continue
 
-                price = float(liq.get("liqPrice", 0))
-                szi = float(liq.get("szi", 0))
+                price = safe_float(liq.get("liqPrice", 0))
+                szi = safe_float(liq.get("szi", 0))
                 sz = abs(szi)
                 value = price * sz
 
+                # На HL: szi < 0 означает принудительное закрытие Long, szi > 0 — закрытие Short
                 side = "LONG" if szi < 0 else "SHORT"
                 user_addr = liq.get("user", "unknown")
                 user_short = user_addr[:6] + "..." + user_addr[-4:] if len(user_addr) > 10 else user_addr
 
                 logger.info(
-                    f"[{self.name}] ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (MarkPx: ${price:,.4f}, User: {user_short})"
+                    f"[{self.name}] ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (MarkPx: ${price:,.4f})"
                 )
 
                 if value >= MIN_LIQ_HYPERLIQUID:
                     extra = f"🏷 <b>Адрес:</b> <code>{user_short}</code>"
                     send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
+
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка парсинга Hyperliquid: {e}")
 
