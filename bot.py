@@ -33,6 +33,10 @@ logger = logging.getLogger("CORE")
 binance_mark_prices = {}
 binance_prices_lock = threading.Lock()
 
+# Глобальный кэш для сохранения цен маркировки Bybit
+bybit_mark_prices = {}
+bybit_prices_lock = threading.Lock()
+
 
 # ─── Helpers ────────────────────────────────────────────────
 def safe_float(val, default=0.0) -> float:
@@ -367,7 +371,7 @@ class BinanceMonitor(BaseMonitor):
             logger.error(f"[{self.name}] Ошибка обработки: {e}")
 
 
-# ─── Bybit (ПОЛНОСТЬЮ ИСПРАВЛЕН И НАСТРОЕН) ───────────────────
+# ─── Bybit (ОБНОВЛЕННЫЙ С ПОДДЕРЖКОЙ TICKERS) ────────────────
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
 
@@ -390,20 +394,44 @@ class BybitMonitor(BaseMonitor):
             
         logger.info(f"[{self.name}] ✅ Подключено. Отправка подписок на {len(BYBIT_SYMBOLS)} пар...")
         self._delay = 1
+        
+        # 🟢 Формируем подписки одновременно на ликвидации И на тикеры
+        args = []
+        for s in BYBIT_SYMBOLS:
+            args.append(f"allLiquidation.{s}")
+            args.append(f"tickers.{s}") # Стрим для получения точной markPrice
+
         req = {
             "op": "subscribe",
-            "args": [f"allLiquidation.{s}" for s in BYBIT_SYMBOLS]
+            "args": args
         }
         ws.send(json.dumps(req))
 
     def on_message(self, ws, message):
         try:
+            # Диагностический лог (при желании можно закомментировать)
+            logger.info(f"[{self.name}] 📥 RAW ВХОДЯЩИЙ JSON: {message}")
+            
             data = json.loads(message)
             if data.get("op") == "subscribe":
                 logger.info(f"[{self.name}] Ответ на подписку: {data}")
                 return
 
             topic = data.get("topic", "")
+            
+            # 🟢 1. ОБРАБОТКА СТРИМА ТИКЕРОВ (Обновление цены маркировки)
+            if topic.startswith("tickers."):
+                inner_data = data.get("data", {})
+                symbol = inner_data.get("symbol")
+                # В стриме tickers для линейных контрактов это поле гарантированно называется 'markPrice'
+                mark_price = safe_float(inner_data.get("markPrice", 0))
+                
+                if symbol and mark_price > 0:
+                    with bybit_prices_lock:
+                        bybit_mark_prices[symbol] = mark_price
+                return
+
+            # 2. ОБРАБОТКА СТРИМА ЛИКВИДАЦИЙ
             if not topic.startswith("allLiquidation."):
                 return
 
@@ -413,19 +441,24 @@ class BybitMonitor(BaseMonitor):
                 if symbol not in BYBIT_SYMBOLS:
                     continue
 
-                # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН (ПО ДЕКЛАРАЦИИ BYBIT V5):
-                # На Bybit: Принудительный ордер "Buy" закрывает Short-позицию клиента.
-                # Принудительный ордер "Sell" закрывает Long-позицию клиента.
-                side_raw = item.get("side", "").upper()  # Было "S", исправлено на "side"
-                side = "SHORT" if side_raw == "BUY" else "LONG"
+                # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН:
+                # На Bybit: ордер "Sell" закрывает Long-позицию. Ордер "Buy" закрывает Short-позицию.
+                side_raw = item.get("S", "")
+                side = "SHORT" if side_raw.lower() == "sell" else "LONG"
 
-                qty = safe_float(item.get("size", 0))    # Было "v", исправлено на "size"
+                qty = safe_float(item.get("v", 0))
                 
-                # ИСПРАВЛЕНИЕ ЦЕНЫ: Ключ в V5 называется "markPrice" (вместо "mp")
-                price = safe_float(item.get("markPrice", 0))
+                # 🟢 Получаем ЦЕНУ МАРКИРОВКИ из нашего кэша тикеров
+                with bybit_prices_lock:
+                    price = bybit_mark_prices.get(symbol, 0.0)
+                
+                # Резервный вариант: если в кэше цены еще нет, берем цену 'p' из самого ордера ликвидации
+                if price == 0.0:
+                    price = safe_float(item.get("p", 0))
+
                 value = qty * price
 
-                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.2f})")
+                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.4f})")
 
                 if value >= MIN_LIQ_BYBIT:
                     send_telegram(format_liq_msg("Bybit", symbol, side, price, qty, value))
