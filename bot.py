@@ -133,7 +133,7 @@ def run_test_simulation():
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
 
-    # Симуляция Hyperliquid
+    # Симуляция Hyperliquid (Приведена к реальному формату API биржи)
     sim_hl = HYPERLIQUID_COINS[0] if HYPERLIQUID_COINS else "NEAR"
     log.append(f"\n[ТЕСТ Hyperliquid] Отправка {sim_hl} Лонг $172.0k")
     msg = json.dumps({
@@ -141,9 +141,9 @@ def run_test_simulation():
         "data": [
             {
                 "coin": sim_hl,
-                "liqPrice": "2.15",
-                "szi": "-80000",
-                "user": "0x1234567890abcdef"
+                "side": "S",
+                "px": "2.15",
+                "sz": "80000"
             }
         ]
     })
