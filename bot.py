@@ -500,10 +500,6 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            
-            # ВРЕМЕННЫЙ ДЕБАГ: Пишем абсолютно всё, что пришло от Hyperliquid в консоль Render
-            # Если тут будет пусто — значит, адрес wss://api.hyperliquid.xyz/ws заблокирован вашим хостингом или лежит
-            logger.info(f"[{self.name}] СЫРЫЕ ДАННЫЕ: {message[:300]}") 
 
             if data.get("channel") == "subscriptionResponse":
                 logger.info(f"[{self.name}] Подписка подтверждена.")
@@ -516,29 +512,25 @@ class HyperliquidMonitor(BaseMonitor):
             trades = trade_data.get("trades", []) if isinstance(trade_data, dict) else []
 
             for trade in trades:
-                # Проверяем, является ли эта сделка ликвидацией
-                # Hyperliquid отмечает ликвидационные сделки флагом "liquidation": true или структурой "liquidation"
-                if not trade.get("liquidation") and trade.get("cloid") != "liquidation":
-                    continue 
-
                 coin = trade.get("coin", "")
                 if coin not in HYPERLIQUID_COINS:
                     continue
 
                 price = safe_float(trade.get("px", 0))
                 sz = safe_float(trade.get("sz", 0))
-                value = price * sz
+                value = price * sz  # Объем сделки в долларах
 
-                # В стриме сделок сторона (side) указывает направление инициатора. 
-                # Для ликвидации лонга это продажа (SELL), для шорта — покупка (BUY)
-                side_raw = trade.get("side", "").upper()
-                side = "LONG" if side_raw == "B" or side_raw == "BUY" else "SHORT" 
-
-                logger.info(
-                    f"[{self.name}] ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (Px: ${price:,.4f})"
-                )
-
+                # Фильтруем по объему: если принт больше вашего порога (например, $5,000)
                 if value >= MIN_LIQ_HYPERLIQUID:
+                    side_raw = trade.get("side", "").upper()
+                    # B (Buy) означает покупку по рынку (ликвидация Short), A (Ask/Sell) — продажа по рынку (ликвидация Long)
+                    side = "SHORT" if side_raw == "B" else "LONG"
+
+                    logger.info(
+                        f"[{self.name}] ⚡ КРУПНЫЙ ОБЪЕМ/ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (Px: ${price:,.2f})"
+                    )
+
+                    # Отправляем в Telegram
                     send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value))
 
         except Exception as e:
