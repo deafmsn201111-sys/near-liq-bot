@@ -107,15 +107,15 @@ def run_test_simulation():
         "type": "snapshot",
         "data": [{
             "s": sim_bybit,
-            "S": "Buy",     # Рост цены -> биржа выкупает шорт-позицию
-            "v": "10",      # Объем
-            "p": "59500",   # Цена банкротства
-            "mp": "60152.5" # Настоящий Mark Price
+            "side": "Buy",          # Изменено под Bybit V5 API: Рост цены -> биржа выкупает (Buy) шорт-позицию
+            "size": "10",          # Изменено под Bybit V5 API
+            "price": "59500",      # Цена банкротства
+            "markPrice": "60120.0" # Изменено под Bybit V5 API: Настоящий Mark Price
         }]
     })
     try:
         BybitMonitor().on_message(None, msg)
-        log.append("  -> Bybit обработан. Проверьте Telegram (должен быть 🟢 Short и Mark Price $60,152.5)")
+        log.append("  -> Bybit обработан. Проверьте Telegram (должен быть 🟢 SHORT и Mark Price $60.120)")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
     time.sleep(1)
@@ -139,7 +139,7 @@ def run_test_simulation():
     })
     try:
         BinanceMonitor().on_message(None, msg)
-        log.append("  -> Binance обработан. Проверьте Telegram (должен быть 🟢 Short)")
+        log.append("  -> Binance обработан. Проверьте Telegram (должен быть 🟢 SHORT)")
     except Exception as e:
         log.append(f"  -> ОШИБКА: {e}")
 
@@ -189,16 +189,23 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
     
-    # СТРОГОЕ ОПРЕДЕЛЕНИЕ СТОРОН И СМАЙЛИКОВ
+    # СТРОГОЕ ОПРЕДЕЛЕНИЕ СТОРОН И СМАЙЛИКОВ ПО ТЗ
     if s in ("SELL", "S", "LONG"):
-        emoji, pos = "🔴", "Long"
+        emoji, pos = "🔴", "LONG"
     elif s in ("BUY", "B", "SHORT"):
-        emoji, pos = "🟢", "Short"
+        emoji, pos = "🟢", "SHORT"
     else:
         emoji, pos = "⚪", s
 
     value_str = fmt_usd(value_usd)
-    price_str = f"${price:,.4f}" if price < 1.0 else (f"${price:,.2f}" if price < 10_000 else f"${price:,.0f}")
+    
+    # Форматирование цены: заменяем запятую на точку для тысяч, если нужно, но по ТЗ прописано @ $60.120 вместо $60,120
+    # Делаем стандартный вывод разделителя тысяч через точку:
+    if price >= 1000:
+        price_str = f"{price/1000:.3f}"
+        price_str = f"${price_str}"
+    else:
+        price_str = f"${price:,.2f}"
 
     msg = f"{emoji} <b>#{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
     if extra:
@@ -360,7 +367,7 @@ class BinanceMonitor(BaseMonitor):
             logger.error(f"[{self.name}] Ошибка обработки: {e}")
 
 
-# ─── Bybit (ПОЛНОСТЬЮ ИСПРАВЛЕН) ─────────────────────────────
+# ─── Bybit (ПОЛНОСТЬЮ ИСПРАВЛЕН И НАСТРОЕН) ───────────────────
 class BybitMonitor(BaseMonitor):
     name = "Bybit"
 
@@ -406,15 +413,16 @@ class BybitMonitor(BaseMonitor):
                 if symbol not in BYBIT_SYMBOLS:
                     continue
 
-                # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН:
-                # На Bybit: ордер "Sell" закрывает Long-позицию. Ордер "Buy" закрывает Short-позицию.
-                side_raw = item.get("S", "")
-                side = "SHORT" if side_raw.lower() == "sell" else "LONG"
+                # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН (ПО ДЕКЛАРАЦИИ BYBIT V5):
+                # На Bybit: Принудительный ордер "Buy" закрывает Short-позицию клиента.
+                # Принудительный ордер "Sell" закрывает Long-позицию клиента.
+                side_raw = item.get("side", "").upper()  # Было "S", исправлено на "side"
+                side = "SHORT" if side_raw == "BUY" else "LONG"
 
-                qty = safe_float(item.get("v", 0))
+                qty = safe_float(item.get("size", 0))    # Было "v", исправлено на "size"
                 
-                # ИСПРАВЛЕНИЕ ЦЕНЫ: Поле 'mp' содержит подлинный Mark Price (в отличие от 'p' - цены банкротства)
-                price = safe_float(item.get("mp", 0))
+                # ИСПРАВЛЕНИЕ ЦЕНЫ: Ключ в V5 называется "markPrice" (вместо "mp")
+                price = safe_float(item.get("markPrice", 0))
                 value = qty * price
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.4f})")
