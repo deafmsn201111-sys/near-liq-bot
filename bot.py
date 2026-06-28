@@ -409,7 +409,7 @@ class BybitMonitor(BaseMonitor):
                 # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН:
                 # На Bybit: ордер "Sell" закрывает Long-позицию. Ордер "Buy" закрывает Short-позицию.
                 side_raw = item.get("S", "")
-                side = "LONG" if side_raw.lower() == "sell" else "SHORT"
+                side = "SHORT" if side_raw.lower() == "sell" else "LONG"
 
                 qty = safe_float(item.get("v", 0))
                 
