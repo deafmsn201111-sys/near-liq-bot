@@ -502,8 +502,12 @@ class HyperliquidMonitor(BaseMonitor):
             if data.get("channel") != "liquidations":
                 return
 
-            liq_data = data.get("data", {})
-            liquidations = liq_data.get("liquidations", []) if isinstance(liq_data, dict) else []
+            # --- ИСПРАВЛЕННЫЙ ПАРСИНГ ТУТ ---
+            # Биржа присылает список напрямую в ключе "data"
+            liquidations = data.get("data", [])
+            if not isinstance(liquidations, list):
+                return
+            # --------------------------------
 
             for liq in liquidations:
                 coin = liq.get("coin", "")
