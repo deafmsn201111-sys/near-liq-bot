@@ -398,6 +398,7 @@ class BybitMonitor(BaseMonitor):
 
     def on_message(self, ws, message):
         try:
+            logger.info(f"[{self.name}] 📥 RAW ВХОДЯЩИЙ JSON: {message}")
             data = json.loads(message)
             if data.get("op") == "subscribe":
                 logger.info(f"[{self.name}] Ответ на подписку: {data}")
