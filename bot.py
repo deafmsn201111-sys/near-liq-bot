@@ -463,8 +463,10 @@ class HyperliquidMonitor(BaseMonitor):
             if data.get("channel") != "liquidations":
                 return
 
-            liq_data = data.get("data", {})
-            liquidations = liq_data.get("liquidations", []) if isinstance(liq_data, dict) else []
+            # ИСПРАВЛЕНИЕ: Hyperliquid присылает список напрямую в data["data"]
+            liquidations = data.get("data", [])
+            if not isinstance(liquidations, list):
+                return
 
             for liq in liquidations:
                 coin = liq.get("coin", "")
@@ -472,22 +474,29 @@ class HyperliquidMonitor(BaseMonitor):
                 if coin not in HYPERLIQUID_COINS:
                     continue
 
-                price = float(liq.get("liqPrice", 0))
-                szi = float(liq.get("szi", 0))
-                sz = abs(szi)
+                # ИСПРАВЛЕНИЕ: Чтение правильных полей публичного API Hyperliquid
+                price_str = liq.get("px")
+                sz_str = liq.get("sz")
+                side_str = liq.get("side") # "S" (Sell) или "B" (Buy)
+                
+                if not price_str or not sz_str or not side_str:
+                    continue
+
+                price = float(price_str)
+                sz = float(sz_str)
                 value = price * sz
 
-                side = "LONG" if szi < 0 else "SHORT"
-                user_addr = liq.get("user", "unknown")
-                user_short = user_addr[:6] + "..." + user_addr[-4:] if len(user_addr) > 10 else user_addr
+                # ИСПРАВЛЕНИЕ: "S" (принудительная продажа) означает ликвидацию LONG. 
+                # "B" (принудительный выкуп) означает ликвидацию SHORT.
+                side = "LONG" if side_str == "S" else "SHORT"
 
                 logger.info(
-                    f"[{self.name}] ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (MarkPx: ${price:,.4f}, User: {user_short})"
+                    f"[{self.name}] ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (MarkPx: ${price:,.4f})"
                 )
 
                 if value >= MIN_LIQ_HYPERLIQUID:
-                    extra = f"🏷 <b>Адрес:</b> <code>{user_short}</code>"
-                    send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
+                    # Поле user отсутствует в публичном фиде, отправляем без extra-параметров
+                    send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value))
 
         except Exception as e:
             logger.error(f"[{self.name}] Ошибка парсинга Hyperliquid: {e}")
