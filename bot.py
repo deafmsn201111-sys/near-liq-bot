@@ -421,7 +421,7 @@ class BybitMonitor(BaseMonitor):
                 # "Buy" у Bybit = Ликвидация LONG. "Sell" у Bybit = Ликвидация SHORT.
                 side = "SHORT" if bybit_side == "Buy" else "SHORT"
 
-                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)}")
+                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark: ${price:,.2f})")
 
                 if value >= MIN_LIQ_BYBIT:
                     send_telegram(format_liq_msg("Bybit", symbol, side, price, qty, value))
