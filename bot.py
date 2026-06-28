@@ -419,7 +419,7 @@ class BybitMonitor(BaseMonitor):
 
                 # ИСПРАВЛЕНИЕ: Конвертируем сторону позиции Bybit в понятный для format_liq_msg формат
                 # "Buy" у Bybit = Ликвидация LONG. "Sell" у Bybit = Ликвидация SHORT.
-                side = "LONG" if bybit_side == "Buy" else "SHORT"
+                side = "SHORT" if bybit_side == "Buy" else "SHORT"
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)}")
 
