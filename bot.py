@@ -422,10 +422,10 @@ class BybitMonitor(BaseMonitor):
                 qty = safe_float(item.get("size", 0))    # Было "v", исправлено на "size"
                 
                 # ИСПРАВЛЕНИЕ ЦЕНЫ: Ключ в V5 называется "markPrice" (вместо "mp")
-                price = safe_float(item.get("markPrice", 0))
+                price = safe_float(item.get("mp", 0))
                 value = qty * price
 
-                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.4f})")
+                logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.2f})")
 
                 if value >= MIN_LIQ_BYBIT:
                     send_telegram(format_liq_msg("Bybit", symbol, side, price, qty, value))
