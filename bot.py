@@ -414,7 +414,7 @@ class BybitMonitor(BaseMonitor):
                 qty = safe_float(item.get("v", 0))
                 
                 # ИСПРАВЛЕНИЕ ЦЕНЫ: Поле 'mp' содержит подлинный Mark Price (в отличие от 'p' - цены банкротства)
-                price = safe_float(item.get("p") or item.get("p", 0))
+                price = safe_float(item.get("mp", 0))
                 value = qty * price
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.4f})")
