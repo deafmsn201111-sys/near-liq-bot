@@ -416,13 +416,13 @@ class BybitMonitor(BaseMonitor):
                 # ИСПРАВЛЕНИЕ ЛОГИКИ СТОРОН (ПО ДЕКЛАРАЦИИ BYBIT V5):
                 # На Bybit: Принудительный ордер "Buy" закрывает Short-позицию клиента.
                 # Принудительный ордер "Sell" закрывает Long-позицию клиента.
-                side_raw = item.get("s", "").upper()  # Было "S", исправлено на "side"
+                side_raw = item.get("side", "").upper()  # Было "S", исправлено на "side"
                 side = "SHORT" if side_raw == "BUY" else "LONG"
 
-                qty = safe_float(item.get("v", 0))    # Было "v", исправлено на "size"
+                qty = safe_float(item.get("size", 0))    # Было "v", исправлено на "size"
                 
                 # ИСПРАВЛЕНИЕ ЦЕНЫ: Ключ в V5 называется "markPrice" (вместо "mp")
-                price = safe_float(item.get("mp", 0))
+                price = safe_float(item.get("markPrice", 0))
                 value = qty * price
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)} (Mark Price: ${price:,.2f})")
