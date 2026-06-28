@@ -412,10 +412,14 @@ class BybitMonitor(BaseMonitor):
                 if symbol not in BYBIT_SYMBOLS:
                     continue
 
-                side = item.get("S", "")
+                bybit_side = item.get("S", "") # Получаем "Buy" или "Sell" от Bybit
                 qty = float(item.get("v", 0))
                 price = float(item.get("p", 0))
                 value = qty * price
+
+                # ИСПРАВЛЕНИЕ: Конвертируем сторону позиции Bybit в понятный для format_liq_msg формат
+                # "Buy" у Bybit = Ликвидация LONG. "Sell" у Bybit = Ликвидация SHORT.
+                side = "LONG" if bybit_side == "Buy" else "SHORT"
 
                 logger.info(f"[{self.name}] Ликвидация {symbol} {side} -> {fmt_usd(value)}")
 
