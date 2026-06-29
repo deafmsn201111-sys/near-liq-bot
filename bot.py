@@ -501,8 +501,8 @@ class HyperliquidMonitor(BaseMonitor):
         try:
             data = json.loads(message)
 
-            if data.get("channel") == "subscriptionResponse":
-                logger.info(f"[{self.name}] Подписка подтверждена.")
+            # Пропускаем ответы на подписку и системные пинги
+            if data.get("channel") in ["subscriptionResponse", "pong"]:
                 return
 
             if data.get("channel") != "trades":
@@ -511,8 +511,14 @@ class HyperliquidMonitor(BaseMonitor):
             trade_data = data.get("data", {})
             trades = trade_data.get("trades", []) if isinstance(trade_data, dict) else []
 
+            # Задаем жесткий порог для фильтрации логов ($50,000)
+            LOG_THRESHOLD_USD = 50000.0
+
             for trade in trades:
                 coin = trade.get("coin", "")
+                
+                # Если хотите логгировать абсолютно ВСЕ монеты на бирже (включая щиткоины),
+                # закомментируйте следующие две строчки:
                 if coin not in HYPERLIQUID_COINS:
                     continue
 
@@ -520,21 +526,32 @@ class HyperliquidMonitor(BaseMonitor):
                 sz = safe_float(trade.get("sz", 0))
                 value = price * sz  # Объем сделки в долларах
 
-                # Фильтруем по объему: если принт больше вашего порога (например, $5,000)
-                if value >= MIN_LIQ_HYPERLIQUID:
-                    side_raw = trade.get("side", "").upper()
-                    # B (Buy) означает покупку по рынку (ликвидация Short), A (Ask/Sell) — продажа по рынку (ликвидация Long)
-                    side = "SHORT" if side_raw == "B" else "LONG"
+                # Отсекаем всё, что меньше $50,000
+                if value < LOG_THRESHOLD_USD:
+                    continue
 
-                    logger.info(
-                        f"[{self.name}] ⚡ КРУПНЫЙ ОБЪЕМ/ЛИКВИДАЦИЯ {coin} {side} -> {fmt_usd(value)} (Px: ${price:,.2f})"
-                    )
+                # Извлекаем данные сделки
+                side = "BUY(B)" if trade.get("side", "").upper() == "B" else "SELL(A)"
+                tx_hash = trade.get("hash", "0x0000")
+                users = trade.get("users", [])
+                
+                user1 = users[0] if len(users) > 0 else "unknown"
+                user2 = users[1] if len(users) > 1 else "unknown"
 
-                    # Отправляем в Telegram
-                    send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value))
+                # Форматируем красивый структурированный лог, который будет легко анализировать
+                logger.info(
+                    f"[HL-DATASET] 🔥 WHALE/LIQ DETECTED | "
+                    f"Coin: {coin:<5} | "
+                    f"Side: {side:<7} | "
+                    f"Vol: ${value:,.2f} | "
+                    f"Price: ${price:,.2f} | "
+                    f"User1(Market): {user1} | "
+                    f"User2(Maker): {user2} | "
+                    f"Hash: {tx_hash}"
+                )
 
         except Exception as e:
-            logger.error(f"[{self.name}] Ошибка парсинга Hyperliquid: {e}")
+            logger.error(f"[{self.name}] Ошибка сбора датасета Hyperliquid: {e}")
 
 
 # ─── MAIN ────────────────────────────────────────────────────
