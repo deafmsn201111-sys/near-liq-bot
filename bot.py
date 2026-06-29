@@ -464,7 +464,6 @@ class BybitMonitor(BaseMonitor):
             logger.error(f"[{self.name}] Ошибка обработки: {e}")
 
 
-# ─── Hyperliquid ─────────────────────────────────────────────
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
 
@@ -473,20 +472,15 @@ class HyperliquidMonitor(BaseMonitor):
         return "wss://api.hyperliquid.xyz/ws"
 
     def on_open(self, ws):
-        logger.info(f"[{self.name}] ✅ Подключено. Отправка подписок на монеты...")
+        # Используем глобальный системный канал ликвидаций, который не требует указания монет
+        logger.info(f"[{self.name}] ✅ Подключено. Подписка на глобальный стрим ликвидаций для сбора адресов...")
         self._delay = 1
-        
-        # Вместо одного общего топика, шлем подписку на trades для каждой монеты из вашего конфига
-        # В стриме trades также приходят отметки о ликвидациях (поле "liquidation")
-        for coin in HYPERLIQUID_COINS:
-            req = {
-                "method": "subscribe",
-                "subscription": {"type": "trades", "coin": coin}
-            }
-            ws.send(json.dumps(req))
-            time.sleep(0.1) # Небольшая пауза, чтобы не спамить ноду
+        req = {
+            "method": "subscribe",
+            "subscription": {"type": "liquidations"}
+        }
+        ws.send(json.dumps(req))
 
-        # Оставляем пинг-хартбит
         def _hl_heartbeat():
             while self._running and self.ws is ws:
                 time.sleep(15)
@@ -500,54 +494,51 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-
-            # Пропускаем ответы на подписку и системные пинги
-            if data.get("channel") in ["subscriptionResponse", "pong"]:
+            
+            if data.get("channel") == "subscriptionResponse":
+                logger.info(f"[{self.name}] Подписка на ликвидации успешно подтверждена.")
                 return
 
-            if data.get("channel") != "trades":
+            if data.get("channel") != "liquidations":
                 return
 
-            trade_data = data.get("data", {})
-            trades = trade_data.get("trades", []) if isinstance(trade_data, dict) else []
+            liq_data = data.get("data", {})
+            liquidations = liq_data.get("liquidations", []) if isinstance(liq_data, dict) else []
 
-            # Задаем жесткий порог для фильтрации логов ($50,000)
+            # Наш порог для логирования ($50,000)
             LOG_THRESHOLD_USD = 50000.0
 
-            for trade in trades:
-                coin = trade.get("coin", "")
+            for liq in liquidations:
+                coin = liq.get("coin", "")
                 
-                # Если хотите логгировать абсолютно ВСЕ монеты на бирже (включая щиткоины),
-                # закомментируйте следующие две строчки:
-                if coin not in HYPERLIQUID_COINS:
-                    continue
+                # ВАЖНО: Комментируем фильтр по конфигу, чтобы увидеть ликвидации по ВСЕМ парам биржи!
+                # if coin not in HYPERLIQUID_COINS:
+                #     continue
 
-                price = safe_float(trade.get("px", 0))
-                sz = safe_float(trade.get("sz", 0))
-                value = price * sz  # Объем сделки в долларах
+                price = safe_float(liq.get("liqPrice", 0))
+                szi = safe_float(liq.get("szi", 0))
+                sz = abs(szi)
+                value = price * sz
 
-                # Отсекаем всё, что меньше $50,000
+                # Если ликвидация мелкая — не засоряем логи
                 if value < LOG_THRESHOLD_USD:
                     continue
 
-                # Извлекаем данные сделки
-                side = "BUY(B)" if trade.get("side", "").upper() == "B" else "SELL(A)"
-                tx_hash = trade.get("hash", "0x0000")
-                users = trade.get("users", [])
+                # На HL: szi < 0 означает ликвидацию Long positions, szi > 0 — Short positions
+                side = "LONG" if szi < 0 else "SHORT"
                 
-                user1 = users[0] if len(users) > 0 else "unknown"
-                user2 = users[1] if len(users) > 1 else "unknown"
+                # Полный адрес ликвидируемого пользователя (жертвы)
+                victim_user = liq.get("user", "unknown")
 
-                # Форматируем красивый структурированный лог, который будет легко анализировать
+                # Форматируем лог датасета. Обратите внимание: в фиде каналов ликвидаций 
+                # биржа сразу присылает адрес того, кого ликвидировало.
                 logger.info(
-                    f"[HL-DATASET] 🔥 WHALE/LIQ DETECTED | "
+                    f"[HL-DATASET] 🔥 LARGE LIQUIDATION | "
                     f"Coin: {coin:<5} | "
-                    f"Side: {side:<7} | "
+                    f"Side: {side:<6} | "
                     f"Vol: ${value:,.2f} | "
                     f"Price: ${price:,.2f} | "
-                    f"User1(Market): {user1} | "
-                    f"User2(Maker): {user2} | "
-                    f"Hash: {tx_hash}"
+                    f"Liquidated User (Victim): {victim_user}"
                 )
 
         except Exception as e:
