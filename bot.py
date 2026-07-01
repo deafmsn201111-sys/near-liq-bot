@@ -248,74 +248,70 @@ class BybitMonitor(BaseMonitor):
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
     @property
-    def url(self): return "wss://api.hyperliquid.xyz/ws"
+    def url(self): 
+        return "wss://api.hyperliquid.xyz/ws"
     
     def on_open(self, ws):
-        logger.info(f"[{self.name}] ✅ Подключено к стриму ликвидаций.")
+        logger.info(f"[{self.name}] ✅ Подключено. Отправка подписки на explorer...")
         self._delay = 1
-        ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "liquidations"}}))
-        
-        # Безопасный пинг без размножения потоков при реконнектах
-        def _ping_loop():
-            while self._running and self.ws is ws:
-                time.sleep(15)
-                try: ws.send(json.dumps({"method": "ping"}))
-                except Exception: break
-        threading.Thread(target=_ping_loop, daemon=True).start()
+        # ИСПРАВЛЕНИЕ: Переключаемся на официальный рабочий топик explorer
+        ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "explorer"}}))
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             
-            # Извлекаем внутренний блок данных
+            # В канале explorer данные инкапсулированы внутри data -> data
             inner_data = data.get("data", {})
             if not isinstance(inner_data, dict):
                 return
                 
-            # Проверяем, есть ли вообще ликвидации в этом сообщении
             liq_list = inner_data.get("liquidations", [])
             if not liq_list:
                 return
 
-            # Наш аналитический порог, чтобы не забивать память мелкими ордерами
+            # Наш аналитический порог для вывода в stdout (50k чтобы не засорять логи Render)
             LOG_THRESHOLD_USD = 50000.0
             
             for liq in liq_list:
                 coin = liq.get("coin", "")
                 price = safe_float(liq.get("liqPrice", 0))
                 
-                # ИСПРАВЛЕНИЕ: Проверяем сначала 'ntSize', затем 'szi' как запасной вариант
+                # ИСПРАВЛЕНИЕ: Hyperliquid шлет объем в поле ntSize (Net Size) внутри стрима explorer
                 raw_size = liq.get("ntSize") if liq.get("ntSize") is not None else liq.get("szi", 0)
                 sz = abs(safe_float(raw_size))
-                
                 value = price * sz
 
-                # Если размер определился как 0, выведем в лог для отладки структуры (без переполнения памяти)
                 if value == 0:
-                    # Раскомментируйте строку ниже, если хотите увидеть сырой JSON в случае изменений API:
-                    # logger.warning(f"[HL-DEBUG] Получен нулевой объем. Сырой элемент: {liq}")
                     continue
 
                 if value < LOG_THRESHOLD_USD: 
-                    continue # Отсекаем мусор, бережем RAM
+                    continue 
 
-                # В Hyperliquid направление определяется по значению размера:
-                # Если позиция была ликвидирована (ntSize/szi отрицательный), значит это был LONG (его продали).
-                # Если положительный — SHORT (его откупили).
+                # Определение направления: отрицательный размер — позицию Лонг принудительно продали
                 side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
                 victim = liq.get("user", "unknown")
 
-                # Пишем ЧИСТЫЙ датасет крупных ликвидаций напрямую в stdout
                 logger.info(
                     f"[HL-DATASET] 🔥 Coin: {coin:<5} | Side: {side:<5} | Vol: {fmt_usd(value):<7} | User: {victim}"
                 )
                 
-                # Дополнительно шлем алерт в телеграм, если пробит порог из config.py
                 if value >= MIN_LIQ_HYPERLIQUID and coin in HYPERLIQUID_COINS:
                     extra = f"🏷 <b>Ликвидируемый:</b> <code>{victim[:6]}...{victim[-4:]}</code>"
                     send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
         except Exception as e:
             logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e}")
+
+    def run(self):
+        # Нативный пинг-интервал библиотеки websocket-client спасает от разрыва соединения
+        self.ws = websocket.WebSocketApp(
+            self.url,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_open=self.on_open,
+        )
+        self.ws.run_forever(ping_interval=15, ping_timeout=10)
 
 monitors = []
 
