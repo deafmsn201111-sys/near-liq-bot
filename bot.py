@@ -317,8 +317,6 @@ class HyperliquidMonitor(BaseMonitor):
         except Exception as e:
             logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e}")
 
-monitors = []
-
 def main():
     logger.info("🚀 Сборщик ликвидаций запущен.")
     threading.Thread(target=start_http_server, daemon=True).start()
