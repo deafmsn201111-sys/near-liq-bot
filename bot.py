@@ -253,29 +253,30 @@ class HyperliquidMonitor(BaseMonitor):
         logger.info(f"[{self.name}] ✅ Подключено. Отправка подписки на explorer...")
         self._delay = 1
         
-        # Подписка на официальный публичный стрим блоков по спецификации
+        # Шаг 1: Подписываемся на стрим explorer
         ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "explorer"}}))
         
-        # ИСПРАВЛЕНИЕ КРИТИЧЕСКОЙ ОШИБКИ: Аргументы передаются ИСКЛЮЧИТЕЛЬНО через args кортеж
-        threading.Thread(target=self._hl_ping_loop, args=(ws,), daemon=True).start()
-
-    def _hl_ping_loop(self, ws):
-        """Официальный метод поддержания соединения по спецификации Hyperliquid API."""
-        # Работаем, только пока сокет жив и является текущим для монитора
-        while self._running and self.ws == ws:
+        # Шаг 2: КОРЕННОЕ ИЗМЕНЕНИЕ ПО СПЕЦИФИКАЦИИ.
+        # Вместо фонового треда, который ломает TCP-фреймы из-за асинхронного доступа,
+        # мы перехватываем внутреннюю функцию автоматического пинга библиотеки websocket-client.
+        # Теперь, когда библиотека решает отправить пинг, она отправит текстовый JSON, ожидаемый биржей.
+        def custom_ping_function():
             try:
-                # Документация требует отправлять строку "ping" не реже чем раз в 50 секунд
-                ws.send(json.dumps({"method": "ping"}))
+                if ws.sock and ws.sock.connected:
+                    # Отправляем строго текстовый фрейм (Opcode=1, Text), содержащий метод "ping"
+                    ws.send(json.dumps({"method": "ping"}))
             except Exception:
-                break
-            time.sleep(30) # Интервал 30 секунд гарантирует, что нода не выдаст статус Inactive
+                pass
+
+        # Подменяем стандартный метод пинга сокета на наш кастомный JSON-пинг
+        ws._send_ping = custom_ping_function
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             
-            # Фильтруем системные ответы ноды на наш пинг (биржа шлет {"channel": "pong"})
-            if data.get("channel") == "pong":
+            # Стабильно обрабатываем и гасим ответные сообщения от понг-вызовов ноды
+            if data.get("channel") == "pong" or data.get("data") == "pong":
                 return
 
             inner_data = data.get("data", {})
@@ -286,14 +287,12 @@ class HyperliquidMonitor(BaseMonitor):
             if not liq_list:
                 return
 
-            # Наш лимит для логирования в консоль, чтобы Render не рубил инстанс
             LOG_THRESHOLD_USD = 50000.0
             
             for liq in liq_list:
                 coin = liq.get("coin", "")
                 price = safe_float(liq.get("liqPrice", 0))
                 
-                # В канале explorer размер позиции лежит в ntSize (Net Size)
                 raw_size = liq.get("ntSize") if liq.get("ntSize") is not None else liq.get("szi", 0)
                 sz = abs(safe_float(raw_size))
                 value = price * sz
@@ -301,7 +300,6 @@ class HyperliquidMonitor(BaseMonitor):
                 if value == 0 or value < LOG_THRESHOLD_USD: 
                     continue 
 
-                # Если размер отрицательный — продали LONG, если положительный — откупили SHORT
                 side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
                 victim = liq.get("user", "unknown")
 
@@ -323,8 +321,9 @@ class HyperliquidMonitor(BaseMonitor):
             on_close=self.on_close,
             on_open=self.on_open,
         )
-        # Оставляем пинг нижнего уровня для сетевых интерфейсов Render
-        self.ws.run_forever(ping_interval=20, ping_timeout=10)
+        # Настраиваем интервал вызова переопределенного _send_ping.
+        # Значение 30 секунд гарантирует отправку задолго до наступления лимита Inactive (50 сек).
+        self.ws.run_forever(ping_interval=30, ping_timeout=12)
 
 monitors = []
 
