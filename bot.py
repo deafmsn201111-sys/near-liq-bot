@@ -266,21 +266,43 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            if data.get("channel") != "liquidations": return
             
+            # Извлекаем внутренний блок данных
+            inner_data = data.get("data", {})
+            if not isinstance(inner_data, dict):
+                return
+                
+            # Проверяем, есть ли вообще ликвидации в этом сообщении
+            liq_list = inner_data.get("liquidations", [])
+            if not liq_list:
+                return
+
             # Наш аналитический порог, чтобы не забивать память мелкими ордерами
             LOG_THRESHOLD_USD = 50000.0
             
-            for liq in data.get("data", {}).get("liquidations", []):
+            for liq in liq_list:
                 coin = liq.get("coin", "")
                 price = safe_float(liq.get("liqPrice", 0))
-                sz = abs(safe_float(liq.get("szi", 0)))
+                
+                # ИСПРАВЛЕНИЕ: Проверяем сначала 'ntSize', затем 'szi' как запасной вариант
+                raw_size = liq.get("ntSize") if liq.get("ntSize") is not None else liq.get("szi", 0)
+                sz = abs(safe_float(raw_size))
+                
                 value = price * sz
+
+                # Если размер определился как 0, выведем в лог для отладки структуры (без переполнения памяти)
+                if value == 0:
+                    # Раскомментируйте строку ниже, если хотите увидеть сырой JSON в случае изменений API:
+                    # logger.warning(f"[HL-DEBUG] Получен нулевой объем. Сырой элемент: {liq}")
+                    continue
 
                 if value < LOG_THRESHOLD_USD: 
                     continue # Отсекаем мусор, бережем RAM
 
-                side = "LONG" if safe_float(liq.get("szi", 0)) < 0 else "SHORT"
+                # В Hyperliquid направление определяется по значению размера:
+                # Если позиция была ликвидирована (ntSize/szi отрицательный), значит это был LONG (его продали).
+                # Если положительный — SHORT (его откупили).
+                side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
                 victim = liq.get("user", "unknown")
 
                 # Пишем ЧИСТЫЙ датасет крупных ликвидаций напрямую в stdout
@@ -292,8 +314,8 @@ class HyperliquidMonitor(BaseMonitor):
                 if value >= MIN_LIQ_HYPERLIQUID and coin in HYPERLIQUID_COINS:
                     extra = f"🏷 <b>Ликвидируемый:</b> <code>{victim[:6]}...{victim[-4:]}</code>"
                     send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e}")
 
 monitors = []
 
