@@ -101,6 +101,8 @@ def send_telegram(text):
 def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
+    
+    # Определяем базовый цвет кружочка
     if s in ("SELL", "S", "LONG"):
         emoji, pos = "🔴", "LONG"
     elif s in ("BUY", "B", "SHORT"):
@@ -108,13 +110,23 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     else:
         emoji, pos = "⚪", s
 
+    # Определяем количество кружочков в зависимости от объема ликвидации
+    if value_usd >= 1_000_000:
+        emoji_prefix = emoji * 3
+    elif value_usd >= 500_000:
+        emoji_prefix = emoji * 2
+    else:
+        emoji_prefix = emoji
+
     value_str = fmt_usd(value_usd)
     price_str = f"${price/1000:.3f}" if price >= 1000 else f"${price:,.2f}"
-    msg = f"{emoji} <b>#{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
+    
+    # Собираем сообщение с новым префиксом из кружочков
+    msg = f"{emoji_prefix} <b>#{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
     if extra:
         msg += f"\n{extra}"
     return msg
-
+    
 class BaseMonitor:
     name = "BASE"
     def __init__(self):
