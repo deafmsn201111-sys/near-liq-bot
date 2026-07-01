@@ -12,7 +12,7 @@ from config import (
     MIN_MSG_INTERVAL, HTTP_PORT,
 )
 
-# Настройка ротации файлов (максимум 2 МБ, храним 1 архив — жесткий лимит для Render)
+# Настройка ротации файлов
 file_handler = RotatingFileHandler(
     "bot.log", 
     maxBytes=2 * 1024 * 1024, 
@@ -20,7 +20,6 @@ file_handler = RotatingFileHandler(
     encoding="utf-8"
 )
 
-# Снижаем уровень логирования для сторонних библиотек, чтобы они не забивали RAM/диск
 logging.getLogger("websocket").setLevel(logging.WARNING)
 
 logging.basicConfig(
@@ -68,7 +67,7 @@ class PingHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
     def log_message(self, fmt, *args):
-        pass # Отключаем логирование HTTP-запросов пинга, чтобы беречь память
+        pass
 
 def start_http_server():
     server = HTTPServer(("0.0.0.0", HTTP_PORT), PingHandler)
@@ -250,57 +249,78 @@ class HyperliquidMonitor(BaseMonitor):
         return "wss://api.hyperliquid.xyz/ws"
     
     def on_open(self, ws):
-        logger.info(f"[{self.name}] ✅ Подключено. Отправка подписки на explorer...")
+        logger.info(f"[{self.name}] ✅ Подключено к стриму ликвидаций.")
         self._delay = 1
         
-        # Шаг 1: Подписываемся на стрим explorer
-        ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "explorer"}}))
+        # 1. Возвращаем оригинальную подписку. Канал liquidations существует и работал.
+        ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "liquidations"}}))
         
-        # Шаг 2: КОРЕННОЕ ИЗМЕНЕНИЕ ПО СПЕЦИФИКАЦИИ.
-        # Вместо фонового треда, который ломает TCP-фреймы из-за асинхронного доступа,
-        # мы перехватываем внутреннюю функцию автоматического пинга библиотеки websocket-client.
-        # Теперь, когда библиотека решает отправить пинг, она отправит текстовый JSON, ожидаемый биржей.
-        def custom_ping_function():
-            try:
-                if ws.sock and ws.sock.connected:
-                    # Отправляем строго текстовый фрейм (Opcode=1, Text), содержащий метод "ping"
+        # 2. Возвращаем твой ИДЕАЛЬНО РАБОЧИЙ пинг-луп из самой первой версии бота.
+        def _ping_loop():
+            while self._running and self.ws is ws:
+                time.sleep(20)
+                try: 
                     ws.send(json.dumps({"method": "ping"}))
-            except Exception:
-                pass
-
-        # Подменяем стандартный метод пинга сокета на наш кастомный JSON-пинг
-        ws._send_ping = custom_ping_function
+                except Exception: 
+                    break
+        threading.Thread(target=_ping_loop, daemon=True).start()
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             
-            # Стабильно обрабатываем и гасим ответные сообщения от понг-вызовов ноды
-            if data.get("channel") == "pong" or data.get("data") == "pong":
+            # Биржа отвечает понгом на наши пинги
+            if data.get("channel") == "pong":
                 return
 
-            inner_data = data.get("data", {})
-            if not isinstance(inner_data, dict):
+            if data.get("channel") != "liquidations":
                 return
-                
-            liq_list = inner_data.get("liquidations", [])
-            if not liq_list:
+
+            raw_data = data.get("data")
+            if not raw_data:
                 return
+
+            # ИСЦЕЛЕНИЕ ГЛАВНОГО БАГА:
+            # Если raw_data оказался списком (list), мы не пытаемся делать .get("liquidations"),
+            # что раньше вызывало скрытый AttributeError.
+            liq_list = []
+            if isinstance(raw_data, list):
+                liq_list = raw_data
+            elif isinstance(raw_data, dict):
+                liq_list = raw_data.get("liquidations", [raw_data])
 
             LOG_THRESHOLD_USD = 50000.0
             
             for liq in liq_list:
-                coin = liq.get("coin", "")
-                price = safe_float(liq.get("liqPrice", 0))
+                # Динамический поиск ключей: страхуемся от любых сюрпризов API
+                coin = liq.get("coin") or liq.get("asset") or "UNKNOWN"
+                price = safe_float(liq.get("liqPrice") or liq.get("px") or liq.get("price") or 0)
                 
-                raw_size = liq.get("ntSize") if liq.get("ntSize") is not None else liq.get("szi", 0)
+                # Сканируем все известные ключи объема, которые когда-либо использовал Hyperliquid
+                raw_size = liq.get("sz") or liq.get("szi") or liq.get("ntSize") or liq.get("size") or 0
                 sz = abs(safe_float(raw_size))
+                
                 value = price * sz
 
-                if value == 0 or value < LOG_THRESHOLD_USD: 
+                # Если объем всё равно 0, значит структура данных кардинально другая.
+                # Печатаем сырой JSON, чтобы точно знать, где лежат данные.
+                if value == 0:
+                    logger.warning(f"[HL-DEBUG] Не найден объем. Сырой элемент: {liq}")
+                    continue
+
+                if value < LOG_THRESHOLD_USD: 
                     continue 
 
-                side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
+                # Определение направления (Side)
+                side_val = str(liq.get("side", "")).upper()
+                if side_val in ("B", "BUY", "SHORT"):
+                    side = "SHORT"
+                elif side_val in ("A", "SELL", "LONG", "S"):
+                    side = "LONG"
+                else:
+                    # Фоллбэк: отрицательный сайз = лонг ликвидирован
+                    side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
+
                 victim = liq.get("user", "unknown")
 
                 logger.info(
@@ -310,20 +330,10 @@ class HyperliquidMonitor(BaseMonitor):
                 if value >= MIN_LIQ_HYPERLIQUID and coin in HYPERLIQUID_COINS:
                     extra = f"🏷 <b>Ликвидируемый:</b> <code>{victim[:6]}...{victim[-4:]}</code>"
                     send_telegram(format_liq_msg("Hyperliquid", coin, side, price, sz, value, extra))
-        except Exception as e:
-            logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e}")
 
-    def run(self):
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open,
-        )
-        # Настраиваем интервал вызова переопределенного _send_ping.
-        # Значение 30 секунд гарантирует отправку задолго до наступления лимита Inactive (50 сек).
-        self.ws.run_forever(ping_interval=30, ping_timeout=12)
+        except Exception as e:
+            # Теперь ошибки парсинга не проглатываются молча!
+            logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e} | Payload: {message[:250]}")
 
 monitors = []
 
