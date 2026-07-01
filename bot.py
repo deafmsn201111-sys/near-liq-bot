@@ -102,7 +102,6 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     s = side.upper().strip()
     coin = symbol.replace("USDT", "").replace("usdt", "")
     
-    # Определяем базовый цвет кружочка
     if s in ("SELL", "S", "LONG"):
         emoji, pos = "🔴", "LONG"
     elif s in ("BUY", "B", "SHORT"):
@@ -110,7 +109,6 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     else:
         emoji, pos = "⚪", s
 
-    # Определяем количество кружочков в зависимости от объема ликвидации
     if value_usd >= 1_000_000:
         emoji_prefix = emoji * 3
     elif value_usd >= 500_000:
@@ -121,7 +119,6 @@ def format_liq_msg(exchange, symbol, side, price, qty, value_usd, extra=""):
     value_str = fmt_usd(value_usd)
     price_str = f"${price/1000:.3f}" if price >= 1000 else f"${price:,.2f}"
     
-    # Собираем сообщение с новым префиксом из кружочков
     msg = f"{emoji_prefix} <b>#{coin}</b> Liquidated {pos}: {value_str} @ {price_str} | {exchange}"
     if extra:
         msg += f"\n{extra}"
@@ -247,6 +244,7 @@ class BybitMonitor(BaseMonitor):
 
 class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid"
+
     @property
     def url(self): 
         return "wss://api.hyperliquid.xyz/ws"
@@ -254,14 +252,32 @@ class HyperliquidMonitor(BaseMonitor):
     def on_open(self, ws):
         logger.info(f"[{self.name}] ✅ Подключено. Отправка подписки на explorer...")
         self._delay = 1
-        # ИСПРАВЛЕНИЕ: Переключаемся на официальный рабочий топик explorer
+        
+        # Подписка на официальный публичный стрим блоков по спецификации
         ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "explorer"}}))
+        
+        # ИСПРАВЛЕНИЕ КРИТИЧЕСКОЙ ОШИБКИ: Аргументы передаются ИСКЛЮЧИТЕЛЬНО через args кортеж
+        threading.Thread(target=self._hl_ping_loop, args=(ws,), daemon=True).start()
+
+    def _hl_ping_loop(self, ws):
+        """Официальный метод поддержания соединения по спецификации Hyperliquid API."""
+        # Работаем, только пока сокет жив и является текущим для монитора
+        while self._running and self.ws == ws:
+            try:
+                # Документация требует отправлять строку "ping" не реже чем раз в 50 секунд
+                ws.send(json.dumps({"method": "ping"}))
+            except Exception:
+                break
+            time.sleep(30) # Интервал 30 секунд гарантирует, что нода не выдаст статус Inactive
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             
-            # В канале explorer данные инкапсулированы внутри data -> data
+            # Фильтруем системные ответы ноды на наш пинг (биржа шлет {"channel": "pong"})
+            if data.get("channel") == "pong":
+                return
+
             inner_data = data.get("data", {})
             if not isinstance(inner_data, dict):
                 return
@@ -270,25 +286,22 @@ class HyperliquidMonitor(BaseMonitor):
             if not liq_list:
                 return
 
-            # Наш аналитический порог для вывода в stdout (50k чтобы не засорять логи Render)
+            # Наш лимит для логирования в консоль, чтобы Render не рубил инстанс
             LOG_THRESHOLD_USD = 50000.0
             
             for liq in liq_list:
                 coin = liq.get("coin", "")
                 price = safe_float(liq.get("liqPrice", 0))
                 
-                # ИСПРАВЛЕНИЕ: Hyperliquid шлет объем в поле ntSize (Net Size) внутри стрима explorer
+                # В канале explorer размер позиции лежит в ntSize (Net Size)
                 raw_size = liq.get("ntSize") if liq.get("ntSize") is not None else liq.get("szi", 0)
                 sz = abs(safe_float(raw_size))
                 value = price * sz
 
-                if value == 0:
-                    continue
-
-                if value < LOG_THRESHOLD_USD: 
+                if value == 0 or value < LOG_THRESHOLD_USD: 
                     continue 
 
-                # Определение направления: отрицательный размер — позицию Лонг принудительно продали
+                # Если размер отрицательный — продали LONG, если положительный — откупили SHORT
                 side = "LONG" if safe_float(raw_size) < 0 else "SHORT"
                 victim = liq.get("user", "unknown")
 
@@ -303,7 +316,6 @@ class HyperliquidMonitor(BaseMonitor):
             logger.error(f"[HL-ERROR] Ошибка обработки сообщения: {e}")
 
     def run(self):
-        # Нативный пинг-интервал библиотеки websocket-client спасает от разрыва соединения
         self.ws = websocket.WebSocketApp(
             self.url,
             on_message=self.on_message,
@@ -311,7 +323,8 @@ class HyperliquidMonitor(BaseMonitor):
             on_close=self.on_close,
             on_open=self.on_open,
         )
-        self.ws.run_forever(ping_interval=15, ping_timeout=10)
+        # Оставляем пинг нижнего уровня для сетевых интерфейсов Render
+        self.ws.run_forever(ping_interval=20, ping_timeout=10)
 
 monitors = []
 
