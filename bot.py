@@ -266,7 +266,7 @@ class HyperliquidMonitor(BaseMonitor):
 
             trades = data.get("data", [])
             # Установили порог 500к для отсечения мусора
-            MIN_VAL_THRESHOLD = 50000.0 
+            MIN_VAL_THRESHOLD = 5000.0 
 
             for trade in trades:
                 price = safe_float(trade.get("px"))
