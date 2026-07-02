@@ -254,6 +254,20 @@ class HyperliquidMonitor(BaseMonitor):
             "method": "subscribe", 
             "subscription": {"type": "explorer"}
         }))
+        # Запускаем поток для поддержания активности
+        threading.Thread(target=self._keepalive, args=(ws,), daemon=True).start()
+
+    def _keepalive(self, ws):
+        """Отправляет сигнал активности, чтобы сервер не кикал за Idle."""
+        while True:
+            time.sleep(30)
+            try:
+                if ws.sock and ws.sock.connected:
+                    ws.send(json.dumps({"method": "ping"}))
+                else:
+                    break
+            except Exception:
+                break
 
     def on_message(self, ws, message):
         try:
@@ -266,40 +280,32 @@ class HyperliquidMonitor(BaseMonitor):
 
             for tx in txs:
                 action = tx.get("action", {})
-                
-                # Ищем ликвидацию. 
-                # Если в логах поле называется иначе (например, "liquidation"), 
-                # поправь этот ключ в action.get(...)
+                # Фильтруем ликвидации
                 if action.get("type") == "liquidation":
-                    # Сюда выводим данные для анализа
                     logger.info(f"[LIQUIDATION-DETECTED] Данные: {action}")
-
         except Exception as e:
-            logger.error(f"[HL-EXPLORER-ERROR] Ошибка разбора: {e}")
+            logger.error(f"[HL-ERROR] Ошибка разбора: {e}")
 
     def on_error(self, ws, error):
         logger.error(f"[{self.name}] WS ошибка: {error}")
 
     def on_close(self, ws, close_status_code, close_msg):
-        logger.warning(f"[{self.name}] Соединение закрыто. Переподключение через 5 сек...")
-        time.sleep(5)
-        self.start_thread() # Пытаемся перезапустить поток
+        logger.warning(f"[{self.name}] Соединение закрыто. Переподключение...")
 
     def run(self):
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open,
-        )
-        
-        # Установили 15 секунд + heartbeat, чтобы сервер не считал нас "Inactive"
-        self.ws.run_forever(
-            ping_interval=15, 
-            ping_timeout=10, 
-            ping_payload="heartbeat"
-        )
+        while True:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.url,
+                    on_message=self.on_message,
+                    on_error=self.on_error,
+                    on_close=self.on_close,
+                    on_open=self.on_open,
+                )
+                self.ws.run_forever(ping_interval=20, ping_timeout=10)
+            except Exception as e:
+                logger.error(f"Critical error: {e}")
+            time.sleep(5)
 
 monitors = []
 
