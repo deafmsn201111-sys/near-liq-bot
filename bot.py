@@ -291,7 +291,8 @@ class HyperliquidMonitor(BaseMonitor):
                 }
                 
                 # Пишем в лог только "крупняк"
-                # logger.info(f"[DATA] {json.dumps(log_entry)}")
+        
+                    logger.info(f"[DATA] {json.dumps(log_entry)}")
 
         except Exception as e:
             logger.error(f"[HL-ERROR] Ошибка обработки потока: {e}")
