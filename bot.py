@@ -241,71 +241,60 @@ class BybitMonitor(BaseMonitor):
         except Exception:
             pass
 
-class HyperliquidMonitor(BaseMonitor):
-    name = "Hyperliquid"
-
+class HyperliquidExplorerMonitor(BaseMonitor):
+    name = "Hyperliquid-Explorer"
+    
     @property
     def url(self): 
         return "wss://api.hyperliquid.xyz/ws"
-    
+
     def on_open(self, ws):
-        logger.info(f"[{self.name}] ✅ Подключено. Сбор сырых данных сделок.")
-        # Подписываемся на сделки по всем монетам
-        for coin in HYPERLIQUID_COINS:
-            ws.send(json.dumps({
-                "method": "subscribe", 
-                "subscription": {"type": "trades", "coin": coin}
-            }))
-            time.sleep(0.05)
+        logger.info(f"[{self.name}] ✅ Подключено к EXPLORER. Ищем ликвидации...")
+        # Подписываемся на блокчейн-события
+        ws.send(json.dumps({
+            "method": "subscribe", 
+            "subscription": {"type": "explorer"}
+        }))
 
     def on_message(self, ws, message):
         try:
-            data = json.loads(message)
-            if data.get("channel") != "trades":
+            msg = json.loads(message)
+            # В explorer приходят данные блока
+            if msg.get("channel") != "explorer":
                 return
 
-            trades = data.get("data", [])
-            # Установили порог 500к для отсечения мусора
-            MIN_VAL_THRESHOLD = 5000.0 
+            # Внутри explorer всегда есть список транзакций (txs)
+            data = msg.get("data", {})
+            txs = data.get("txs", [])
 
-            for trade in trades:
-                price = safe_float(trade.get("px"))
-                size = safe_float(trade.get("sz"))
-                value = price * size
-
-                # Фильтр: если меньше 500к — игнорируем
-                if value < MIN_VAL_THRESHOLD:
-                    continue
-
-                # Формируем чистый объект для твоего будущего парсера
-                log_entry = {
-                    "t": "LARGE_TRADE",
-                    "coin": trade.get("coin"),
-                    "px": price,
-                    "sz": size,
-                    "val": value, # Добавил стоимость для удобства сортировки/фильтрации
-                    "side": trade.get("side"),
-                    "dir": trade.get("dir"), 
-                    "time": trade.get("time"),
-                    "hash": trade.get("hash")
-                }
+            for tx in txs:
+                # В Hyperliquid транзакция имеет поле 'action'
+                action = tx.get("action", {})
                 
-                # Пишем в лог только "крупняк"
-        
-                logger.info(f"[DATA] {json.dumps(log_entry)}")
+                # Ищем именно ликвидацию
+                # В структуре HL это выглядит примерно так (названия полей могут быть чуть иными, 
+                # уточнишь по первому логу):
+                if action.get("type") == "liquidation":
+                    process_liquidation(action)
 
         except Exception as e:
-            logger.error(f"[HL-ERROR] Ошибка обработки потока: {e}")
+            logger.error(f"[HL-EXPLORER-ERROR] Ошибка разбора: {e}")
 
-    def run(self):
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            on_open=self.on_open,
-        )
-        self.ws.run_forever(ping_interval=30, ping_timeout=10)
+def process_liquidation(liq):
+    """
+    Тут мы обрабатываем найденную ликвидацию
+    """
+    user = liq.get("liquidatedUser")
+    price = liq.get("markPx")
+    size = liq.get("sz")
+    coin = liq.get("coin")
+    
+    # Тот самый фильтр на 500к
+    value = float(price) * float(size)
+    if value < 500000:
+        return
+
+    logger.info(f"[LIQUIDATION-DETECTED] User: {user} | Coin: {coin} | Val: {value} | Price: {price}")
 
 monitors = []
 
