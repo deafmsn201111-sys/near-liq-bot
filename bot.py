@@ -241,7 +241,7 @@ class BybitMonitor(BaseMonitor):
         except Exception:
             pass
 
-class HyperliquidExplorerMonitor(BaseMonitor):
+class HyperliquidMonitor(BaseMonitor):
     name = "Hyperliquid-Explorer"
     
     @property
