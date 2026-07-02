@@ -241,7 +241,7 @@ class BybitMonitor(BaseMonitor):
         except Exception:
             pass
 
-class HyperliquidMonitor(BaseMonitor):
+class HyperliquidExplorerMonitor(BaseMonitor):
     name = "Hyperliquid-Explorer"
     
     @property
@@ -250,7 +250,6 @@ class HyperliquidMonitor(BaseMonitor):
 
     def on_open(self, ws):
         logger.info(f"[{self.name}] ✅ Подключено к EXPLORER. Ищем ликвидации...")
-        # Подписываемся на блокчейн-события
         ws.send(json.dumps({
             "method": "subscribe", 
             "subscription": {"type": "explorer"}
@@ -259,42 +258,48 @@ class HyperliquidMonitor(BaseMonitor):
     def on_message(self, ws, message):
         try:
             msg = json.loads(message)
-            # В explorer приходят данные блока
             if msg.get("channel") != "explorer":
                 return
 
-            # Внутри explorer всегда есть список транзакций (txs)
             data = msg.get("data", {})
             txs = data.get("txs", [])
 
             for tx in txs:
-                # В Hyperliquid транзакция имеет поле 'action'
                 action = tx.get("action", {})
                 
-                # Ищем именно ликвидацию
-                # В структуре HL это выглядит примерно так (названия полей могут быть чуть иными, 
-                # уточнишь по первому логу):
+                # Ищем ликвидацию. 
+                # Если в логах поле называется иначе (например, "liquidation"), 
+                # поправь этот ключ в action.get(...)
                 if action.get("type") == "liquidation":
-                    process_liquidation(action)
+                    # Сюда выводим данные для анализа
+                    logger.info(f"[LIQUIDATION-DETECTED] Данные: {action}")
 
         except Exception as e:
             logger.error(f"[HL-EXPLORER-ERROR] Ошибка разбора: {e}")
 
-def process_liquidation(liq):
-    """
-    Тут мы обрабатываем найденную ликвидацию
-    """
-    user = liq.get("liquidatedUser")
-    price = liq.get("markPx")
-    size = liq.get("sz")
-    coin = liq.get("coin")
-    
-    # Тот самый фильтр на 500к
-    value = float(price) * float(size)
-    if value < 500000:
-        return
+    def on_error(self, ws, error):
+        logger.error(f"[{self.name}] WS ошибка: {error}")
 
-    logger.info(f"[LIQUIDATION-DETECTED] User: {user} | Coin: {coin} | Val: {value} | Price: {price}")
+    def on_close(self, ws, close_status_code, close_msg):
+        logger.warning(f"[{self.name}] Соединение закрыто. Переподключение через 5 сек...")
+        time.sleep(5)
+        self.start_thread() # Пытаемся перезапустить поток
+
+    def run(self):
+        self.ws = websocket.WebSocketApp(
+            self.url,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            on_open=self.on_open,
+        )
+        
+        # Установили 15 секунд + heartbeat, чтобы сервер не считал нас "Inactive"
+        self.ws.run_forever(
+            ping_interval=15, 
+            ping_timeout=10, 
+            ping_payload="heartbeat"
+        )
 
 monitors = []
 
